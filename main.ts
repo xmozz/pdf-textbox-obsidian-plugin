@@ -15,7 +15,13 @@ import {
   setIcon,
 } from "obsidian";
 import html2canvas from "html2canvas";
-import { PDFDocument, degrees } from "pdf-lib";
+import {
+  PDFArray,
+  PDFDocument,
+  PDFHexString,
+  PDFName,
+  PDFString,
+} from "pdf-lib";
 
 /* -------------------------------------------------------------------------- */
 /*  Constants                                                                  */
@@ -2097,23 +2103,55 @@ export default class PdfTextboxPlugin extends Plugin {
             width: burn.element.offsetWidth,
             height: burn.element.offsetHeight,
           });
-          const pngBytes = await this.canvasToPngBytes(canvas);
+          const rotatedCanvas = this.rotateCanvasForPdf(canvas, rotation);
+          const pngBytes = await this.canvasToPngBytes(rotatedCanvas);
           const image = await pdf.embedPng(pngBytes);
-          const position = this.imagePositionForRotation(
+          const rect = this.annotationRectForRotation(
             rotation,
             pageWidth,
             pageHeight,
             left,
             top,
+            width,
             height,
           );
 
-          page.drawImage(image, {
-            ...position,
-            width,
-            height,
-            rotate: degrees(rotation),
+          const appearance = pdf.context.stream(
+            `q\n${rect.width} 0 0 ${rect.height} 0 0 cm\n/Im0 Do\nQ\n`,
+            {
+              Type: "XObject",
+              Subtype: "Form",
+              FormType: 1,
+              BBox: [0, 0, rect.width, rect.height],
+              Resources: { XObject: { Im0: image.ref } },
+            },
+          );
+          const appearanceRef = pdf.context.register(appearance);
+
+          const annotationDict = pdf.context.obj({
+            Type: "Annot",
+            Subtype: "Stamp",
+            Rect: [rect.x0, rect.y0, rect.x1, rect.y1],
+            P: page.ref,
+            Border: [0, 0, 0],
+            F: 4,
+            AP: { N: appearanceRef },
+            NM: PDFString.of(annotation.id),
+            T: PDFHexString.fromText("PDF Textbox"),
+            Contents: PDFHexString.fromText(annotation.text),
           });
+          const annotationRef = pdf.context.register(annotationDict);
+
+          let pageAnnotations = page.node.lookupMaybe(
+            PDFName.of("Annots"),
+            PDFArray,
+          );
+          if (!pageAnnotations) {
+            pageAnnotations = pdf.context.obj([]);
+            page.node.set(PDFName.of("Annots"), pageAnnotations);
+          }
+          pageAnnotations.push(annotationRef);
+
           burnedCount += 1;
           burnedIds.add(annotation.id);
         } finally {
@@ -2289,24 +2327,66 @@ export default class PdfTextboxPlugin extends Plugin {
     });
   }
 
-  private imagePositionForRotation(
+  private rotateCanvasForPdf(
+    canvas: HTMLCanvasElement,
+    rotation: number,
+  ): HTMLCanvasElement {
+    const normalized = normalizeRotation(rotation);
+    if (normalized === 0) return canvas;
+
+    const doc = canvas.ownerDocument ?? document;
+    const rotated = doc.createElement("canvas");
+    const swapDimensions = normalized === 90 || normalized === 270;
+    rotated.width = swapDimensions ? canvas.height : canvas.width;
+    rotated.height = swapDimensions ? canvas.width : canvas.height;
+
+    const context = rotated.getContext("2d");
+    if (!context) return canvas;
+
+    context.translate(rotated.width / 2, rotated.height / 2);
+    context.rotate((-normalized * Math.PI) / 180);
+    context.drawImage(canvas, -canvas.width / 2, -canvas.height / 2);
+    return rotated;
+  }
+
+  private annotationRectForRotation(
     rotation: number,
     pageWidth: number,
     pageHeight: number,
     left: number,
     top: number,
+    width: number,
     height: number,
-  ): { x: number; y: number } {
+  ): { x0: number; y0: number; x1: number; y1: number; width: number; height: number } {
+    let x0 = left;
+    let y0 = pageHeight - top - height;
+    let x1 = left + width;
+    let y1 = pageHeight - top;
+
     switch (rotation) {
       case 90:
-        return { x: top + height, y: left };
+        x0 = top;
+        y0 = left;
+        x1 = top + height;
+        y1 = left + width;
+        break;
       case 180:
-        return { x: pageWidth - left, y: top + height };
+        x0 = pageWidth - left - width;
+        y0 = top;
+        x1 = pageWidth - left;
+        y1 = top + height;
+        break;
       case 270:
-        return { x: pageWidth - (top + height), y: pageHeight - left };
+        x0 = pageWidth - top - height;
+        y0 = pageHeight - left - width;
+        x1 = pageWidth - top;
+        y1 = pageHeight - left;
+        break;
       default:
-        return { x: left, y: pageHeight - (top + height) };
+        break;
     }
+
+    return { x0, y0, x1, y1, width: x1 - x0, height: y1 - y0 };
   }
 
   /* ------------------------------- rendering ------------------------------ */

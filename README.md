@@ -1,6 +1,6 @@
 # PDF Textbox
 
-An Obsidian plugin that adds editable Markdown/LaTeX textboxes to Obsidian's native PDF viewer. Textboxes are placed directly on PDF pages, stay anchored while zooming, scrolling, or rotating, and are stored per vault. When you are done, you can burn them permanently into the PDF.
+An Obsidian plugin that adds editable Markdown/LaTeX textboxes to Obsidian's native PDF viewer. Textboxes are placed directly on PDF pages, stay anchored while zooming, scrolling, or rotating, and are stored per vault. When you are done, you can burn them into the PDF as standard PDF annotations, so they can be removed later in a PDF editor.
 
 ## Features
 
@@ -14,7 +14,7 @@ An Obsidian plugin that adds editable Markdown/LaTeX textboxes to Obsidian's nat
 - **Toolbar defaults**: A color picker and a font-size dropdown in the PDF toolbar define the defaults for new textboxes.
 - **Zoom- and scroll-stable**: Positions are stored in PDF coordinates (scale 1) and as normalized values. Overlays live inside the PDF page DOM and are realigned on zoom, rotation, scrolling, and page rendering.
 - **Persistent**: All textboxes are saved in the plugin's `data.json` (vault path, page, coordinates, size, text, color, and font size).
-- **Burn into PDF**: The **Burn textboxes into PDF** command replaces the current PDF with a version that has all textboxes baked in as images. You can also burn a single textbox from its context menu.
+- **Burn into PDF**: The **Burn textboxes into PDF** command replaces the current PDF with a version that stores all textboxes as standard PDF Stamp annotations. You can also burn a single textbox from its context menu. Burned annotations can be removed later with a PDF annotation editor.
 - **Multiple PDF tabs** are supported at the same time.
 
 ## Installation via BRAT (beta)
@@ -51,7 +51,7 @@ BRAT downloads `main.js`, `manifest.json`, and `styles.css` from the latest GitH
    - Use the × button to delete it.
    - The mode stays active until you turn it off or press **Esc**.
 7. The color picker and font-size dropdown in the PDF toolbar set the defaults for new textboxes.
-8. The **Burn textboxes into PDF** command in the command palette (`Ctrl/Cmd + P`) writes all textboxes directly into the current PDF.
+8. The **Burn textboxes into PDF** command in the command palette (`Ctrl/Cmd + P`) stores all textboxes as PDF annotations in the current PDF.
 
 Textboxes are visible outside edit mode but pass clicks through, so the PDF remains normally usable.
 
@@ -75,12 +75,12 @@ The **Burn textboxes into PDF** command:
 
 1. renders every textbox with Obsidian's Markdown renderer (including MathJax/LaTeX),
 2. converts it into a PNG with a transparent surround,
-3. places the image at the correct position and rotation using `pdf-lib`,
+3. creates a standard PDF **Stamp annotation** with that image as its appearance stream, positioned at the correct location and rotation,
 4. overwrites the open PDF file and removes the corresponding textbox entries from `data.json`.
 
 Use **Right-click → Burn this textbox into PDF** to burn only a single textbox.
 
-No copy is created. After burning, the textbox content is an image inside the PDF; the rest of the PDF remains unchanged. Because the original file is replaced directly, make a backup first if needed. The warning can be disabled permanently with **Don't show again** in the dialog or **Confirm before burning** in the settings.
+No copy is created. After burning, the textbox is a regular PDF annotation named **PDF Textbox**; the rest of the PDF remains unchanged. Because it is an annotation rather than page content, you can remove it later with any PDF annotation editor. Because the original file is replaced directly, make a backup first if needed. The warning can be disabled permanently with **Don't show again** in the dialog or **Confirm before burning** in the settings.
 
 ## Data model
 
@@ -135,7 +135,7 @@ Obsidian does not expose a public API for its PDF viewer. The plugin accesses in
 - `.pdf-toolbar-right` as the anchor for the toolbar controls
 - events `pagesinit`, `pagerendered`, `scalechanging`, `rotationchanging`, and `resize`
 
-Markdown is rendered with `MarkdownRenderer.render()` and a view-scoped `Component`. For burning, textboxes are rendered off-screen with the same CSS classes, captured as PNGs with `html2canvas`, and embedded into the PDF pages with `pdf-lib`. The file is then overwritten via `vault.modifyBinary` and the burned entries are removed from `data.json`.
+Markdown is rendered with `MarkdownRenderer.render()` and a view-scoped `Component`. For burning, textboxes are rendered off-screen with the same CSS classes and captured as PNGs with `html2canvas`. `pdf-lib` creates a Form XObject appearance stream for each image and adds a `/Stamp` annotation to the page's `/Annots` array. The file is then overwritten via `vault.modifyBinary` and the burned entries are removed from `data.json`.
 
 Coordinates are measured with `getBoundingClientRect()` on `.canvasWrapper`. That rectangle is already viewport-relative, so the PDF container's scroll offset is included; scale is derived from `viewport.width / pageView.scale` or `rect.width / baseWidth`.
 
@@ -156,8 +156,8 @@ The release version must match in `package.json`, `manifest.json`, and `versions
 1. Bump the version in `package.json`, `manifest.json`, and `versions.json`.
 2. Commit and push a tag:
    ```bash
-   git tag 0.1.0
-   git push origin 0.1.0
+   git tag 0.1.1
+   git push origin 0.1.1
    ```
 3. The GitHub workflow builds the plugin and attaches `main.js`, `manifest.json`, `styles.css`, and `versions.json` to the release.
 4. BRAT picks up the release automatically.
@@ -166,7 +166,8 @@ The release version must match in `package.json`, `manifest.json`, and `versions
 
 - Textboxes only (no freehand drawing, highlights, or shapes).
 - Interactive Markdown elements such as checkboxes and links are visible but not clickable in the PDF view, because overlays pass clicks through outside edit mode.
-- Burning writes textboxes as images directly into the current PDF; they are no longer selectable as text, and the original PDF is overwritten.
+- Burning stores textboxes as PDF Stamp annotations with image appearances; their text is not selectable, and the original PDF is overwritten.
+- Burned annotations can be removed later with a PDF annotation editor, but they are no longer managed by this plugin after burning.
 - Data lives per vault in `data.json`; it is only written into a PDF through the burn command.
 - No device sync beyond normal vault synchronization.
 - Internal PDF.js structures can change with Obsidian updates.
