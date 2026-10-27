@@ -1,7 +1,17 @@
 import {
+  EditorSelection,
+  EditorState,
+  Prec,
+  type Extension,
+} from "@codemirror/state";
+import { EditorView, drawSelection, keymap } from "@codemirror/view";
+import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { language } from "@codemirror/language";
+import {
   App,
   Component,
   MarkdownRenderer,
+  MarkdownView,
   Modal,
   Notice,
   Plugin,
@@ -11,6 +21,7 @@ import {
   TFile,
   View,
   WorkspaceLeaf,
+  editorLivePreviewField,
   normalizePath,
   setIcon,
 } from "obsidian";
@@ -101,6 +112,8 @@ export interface PdfTextboxAnnotation {
   fontSize: number;
   /** Per-textbox background colour (#rrggbb). */
   color: string;
+  /** Whether the textbox is shown as a small icon until hovered. */
+  collapsed: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -202,7 +215,7 @@ interface PdfPageMetrics {
 interface EditingSession {
   annotation: PdfTextboxAnnotation;
   element: HTMLElement;
-  textarea: HTMLTextAreaElement;
+  editorView: EditorView;
   pageEl: HTMLElement;
   pageNumber: number;
   isNew: boolean;
@@ -443,6 +456,7 @@ function coerceAnnotation(
     text: typeof source.text === "string" ? source.text : "",
     fontSize: clamp(finiteNumber(source.fontSize, DEFAULT_FONT_SIZE), 6, 96),
     color: normalizeHexColor(source.color ?? fallbackColor),
+    collapsed: source.collapsed === true,
     createdAt: finiteNumber(source.createdAt, Date.now()),
     updatedAt: finiteNumber(source.updatedAt, Date.now()),
   };
@@ -603,6 +617,9 @@ export default class PdfTextboxPlugin extends Plugin {
   private disposed = false;
   private burning = false;
   private colorMenuCleanup: (() => void) | null = null;
+  private markdownLanguage: Extension | null = null;
+  private markdownLanguagePromise: Promise<Extension | null> | null = null;
+  private editorRequestId = 0;
 
   async onload(): Promise<void> {
     await this.loadStore();
@@ -971,7 +988,9 @@ export default class PdfTextboxPlugin extends Plugin {
     ]);
     const win = ownerDocument.defaultView;
     const onEarlyNavigationKey = (event: KeyboardEvent) => {
-      if (!state.editing || event.target !== state.editing.textarea) return;
+      if (!state.editing || !state.editing.editorView.dom.contains(event.target as Node)) {
+        return;
+      }
       if (!navigationKeys.has(event.key)) return;
       event.stopImmediatePropagation();
     };
@@ -980,6 +999,53 @@ export default class PdfTextboxPlugin extends Plugin {
     state.cleanups.push(() => {
       win?.removeEventListener("keydown", onEarlyNavigationKey, true);
       win?.removeEventListener("keyup", onEarlyNavigationKey, true);
+    });
+
+    const onEditorShortcut = (event: KeyboardEvent) => {
+      const session = state.editing;
+      if (!session) return;
+      if (!session.editorView.dom.contains(event.target as Node)) return;
+
+      const key = event.key.toLowerCase();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        this.commitEditing(state, true);
+        return;
+      }
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      if (key === "enter") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        this.commitEditing(state);
+        return;
+      }
+
+      let handled = true;
+      if (key === "b" && !event.shiftKey) {
+        this.toggleMarkdownFormat(session.editorView, "**");
+      } else if (key === "i" && !event.shiftKey) {
+        this.toggleMarkdownFormat(session.editorView, "*");
+      } else if (key === "e" && !event.shiftKey) {
+        this.toggleMarkdownFormat(session.editorView, "`");
+      } else if (key === "x" && event.shiftKey) {
+        this.toggleMarkdownFormat(session.editorView, "~~");
+      } else if (key === "h" && event.shiftKey) {
+        this.toggleMarkdownFormat(session.editorView, "==");
+      } else if (key === "k" && !event.shiftKey) {
+        this.insertMarkdownLink(session.editorView);
+      } else {
+        handled = false;
+      }
+
+      if (handled) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    };
+    win?.addEventListener("keydown", onEditorShortcut, true);
+    state.cleanups.push(() => {
+      win?.removeEventListener("keydown", onEditorShortcut, true);
     });
 
     const findStampAtPoint = (
@@ -1625,6 +1691,7 @@ export default class PdfTextboxPlugin extends Plugin {
       text: "",
       fontSize: this.data.settings.defaultFontSize,
       color: this.data.settings.backgroundColor,
+      collapsed: false,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
@@ -1664,6 +1731,22 @@ export default class PdfTextboxPlugin extends Plugin {
     setIcon(deleteButton, "x");
     element.appendChild(deleteButton);
 
+    const collapseButton = ownerDocument.createElement("button");
+    collapseButton.type = "button";
+    collapseButton.className = "pdf-textbox-collapse";
+    collapseButton.setAttribute("aria-label", "Collapse textbox");
+    collapseButton.setAttribute("title", "Collapse textbox");
+    setIcon(collapseButton, "minus");
+    element.appendChild(collapseButton);
+
+    const collapsedIcon = ownerDocument.createElement("button");
+    collapsedIcon.type = "button";
+    collapsedIcon.className = "pdf-textbox-collapsed-icon";
+    collapsedIcon.setAttribute("aria-label", "Expand textbox");
+    collapsedIcon.setAttribute("title", "Expand textbox");
+    setIcon(collapsedIcon, "type");
+    element.appendChild(collapsedIcon);
+
     const resizeHandle = ownerDocument.createElement("div");
     resizeHandle.className = "pdf-textbox-resize";
     resizeHandle.setAttribute("aria-hidden", "true");
@@ -1678,6 +1761,40 @@ export default class PdfTextboxPlugin extends Plugin {
       event.preventDefault();
       event.stopPropagation();
       this.deleteAnnotation(state, annotation.id);
+    });
+
+    collapseButton.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    collapseButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!state.editMode) return;
+      annotation.collapsed = true;
+      annotation.updatedAt = Date.now();
+      this.applyCollapsedState(element, annotation);
+      this.requestSave();
+    });
+
+    collapsedIcon.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    collapsedIcon.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      annotation.collapsed = false;
+      annotation.updatedAt = Date.now();
+      this.applyCollapsedState(element, annotation);
+      this.requestSave();
+    });
+
+    element.addEventListener("pointerenter", () => {
+      if (annotation.collapsed) element.classList.add("is-hover-expanded");
+    });
+    element.addEventListener("pointerleave", () => {
+      if (annotation.collapsed) element.classList.remove("is-hover-expanded");
     });
 
     grip.addEventListener("pointerdown", (event) => {
@@ -1697,7 +1814,7 @@ export default class PdfTextboxPlugin extends Plugin {
         target &&
         typeof target.closest === "function" &&
         target.closest(
-          ".pdf-textbox-input, .pdf-textbox-delete, .pdf-textbox-grip, .pdf-textbox-resize",
+          ".pdf-textbox-input, .pdf-textbox-delete, .pdf-textbox-grip, .pdf-textbox-resize, .pdf-textbox-collapse, .pdf-textbox-collapsed-icon",
         )
       ) {
         return;
@@ -1720,7 +1837,7 @@ export default class PdfTextboxPlugin extends Plugin {
         target &&
         typeof target.closest === "function" &&
         target.closest(
-          ".pdf-textbox-input, .pdf-textbox-delete, .pdf-textbox-grip, .pdf-textbox-resize",
+          ".pdf-textbox-input, .pdf-textbox-delete, .pdf-textbox-grip, .pdf-textbox-resize, .pdf-textbox-collapse, .pdf-textbox-collapsed-icon",
         )
       ) {
         return;
@@ -1894,27 +2011,154 @@ export default class PdfTextboxPlugin extends Plugin {
     pageEl: HTMLElement | null,
     isNew: boolean,
   ): void {
+    void this.startEditingAsync(state, annotation, element, pageEl, isNew);
+  }
+
+  private async startEditingAsync(
+    state: PdfViewState,
+    annotation: PdfTextboxAnnotation,
+    element: HTMLElement,
+    pageEl: HTMLElement | null,
+    isNew: boolean,
+  ): Promise<void> {
     if (!pageEl) return;
+    const requestId = ++this.editorRequestId;
     if (state.editing) this.commitEditing(state);
 
     const body = element.querySelector<HTMLElement>(".pdf-textbox-body");
     if (!body) return;
 
-    const textarea = element.ownerDocument.createElement("textarea");
-    textarea.className = "pdf-textbox-input";
-    textarea.value = annotation.text;
-    textarea.spellcheck = false;
-    textarea.rows = 1;
+    if (annotation.collapsed) {
+      annotation.collapsed = false;
+      annotation.updatedAt = Date.now();
+      this.applyCollapsedState(element, annotation);
+      this.requestSave();
+    }
+
+    const markdownLanguage = await this.ensureMarkdownLanguage();
+    if (
+      requestId !== this.editorRequestId ||
+      !element.isConnected ||
+      state.editing
+    ) {
+      return;
+    }
+
+    const extensions: Extension[] = [
+      history(),
+      drawSelection(),
+      EditorView.lineWrapping,
+      EditorView.theme({
+        "&": {
+          height: "auto",
+          backgroundColor: "transparent",
+          color: "inherit",
+          fontFamily: "inherit",
+          fontSize: "inherit",
+          lineHeight: "inherit",
+        },
+        "&.cm-focused": {
+          outline: "none",
+        },
+        ".cm-scroller": {
+          overflow: "visible",
+          fontFamily: "inherit",
+          lineHeight: "inherit",
+        },
+        ".cm-content": {
+          padding: "0",
+          caretColor: "currentColor",
+          color: "inherit",
+          fontFamily: "inherit",
+        },
+        ".cm-line": {
+          padding: "0",
+        },
+        ".cm-gutters": {
+          display: "none",
+        },
+        ".cm-cursor, .cm-dropCursor": {
+          borderLeftColor: "currentColor",
+          borderLeftWidth: "2px",
+        },
+        ".cm-selectionBackground": {
+          backgroundColor: "rgba(127, 127, 127, 0.3)",
+        },
+      }),
+      editorLivePreviewField,
+    ];
+
+    if (markdownLanguage) extensions.push(markdownLanguage);
+
+    const latexSuiteExtensions = this.getLatexSuiteExtensions();
+    if (markdownLanguage && latexSuiteExtensions) {
+      extensions.push(latexSuiteExtensions);
+    }
+
+    extensions.push(
+      Prec.high(
+        keymap.of([
+          {
+            key: "Mod-Enter",
+            run: () => {
+              this.commitEditing(state);
+              return true;
+            },
+          },
+          {
+            key: "Escape",
+            run: () => {
+              this.commitEditing(state, true);
+              return true;
+            },
+          },
+          {
+            key: "Mod-b",
+            run: (view) => this.toggleMarkdownFormat(view, "**"),
+          },
+          {
+            key: "Mod-i",
+            run: (view) => this.toggleMarkdownFormat(view, "*"),
+          },
+          {
+            key: "Mod-e",
+            run: (view) => this.toggleMarkdownFormat(view, "`"),
+          },
+          {
+            key: "Mod-Shift-x",
+            run: (view) => this.toggleMarkdownFormat(view, "~~"),
+          },
+          {
+            key: "Mod-Shift-h",
+            run: (view) => this.toggleMarkdownFormat(view, "=="),
+          },
+          {
+            key: "Mod-k",
+            run: (view) => this.insertMarkdownLink(view),
+          },
+        ]),
+      ),
+      keymap.of([...defaultKeymap, ...historyKeymap]),
+    );
+
+    const editorView = new EditorView({
+      state: EditorState.create({
+        doc: annotation.text,
+        selection: EditorSelection.cursor(annotation.text.length),
+        extensions,
+      }),
+      parent: element,
+    });
+    editorView.dom.classList.add("pdf-textbox-input", "pdf-textbox-editor");
 
     body.classList.add("is-hidden");
-    element.appendChild(textarea);
     element.classList.add("is-editing");
     element.style.height = "auto";
 
     const session: EditingSession = {
       annotation,
       element,
-      textarea,
+      editorView,
       pageEl,
       pageNumber: annotation.page,
       isNew,
@@ -1929,45 +2173,177 @@ export default class PdfTextboxPlugin extends Plugin {
     };
     state.editing = session;
 
-    const grow = (): void => this.autoSizeTextarea(session);
-    textarea.addEventListener("input", grow);
-    textarea.addEventListener("keydown", (event) => {
-      // PDF.js uses arrows, PageUp/PageDown and space for page navigation.
-      // Keep those keys inside the editor so the caret moves instead.
-      event.stopPropagation();
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        this.commitEditing(state, true);
-        return;
-      }
-      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-        event.preventDefault();
-        event.stopPropagation();
-        this.commitEditing(state);
-      }
-    });
-    textarea.addEventListener("keyup", (event) => event.stopPropagation());
-    textarea.addEventListener("keypress", (event) => event.stopPropagation());
-    textarea.addEventListener("blur", () => {
-      if (state.editing === session && !session.committing) {
-        this.commitEditing(state);
-      }
+    editorView.dom.addEventListener("focusout", () => {
+      window.setTimeout(() => {
+        if (
+          state.editing === session &&
+          !session.committing &&
+          !editorView.hasFocus
+        ) {
+          this.commitEditing(state);
+        }
+      }, 0);
     });
 
-    this.autoSizeTextarea(session);
-    textarea.focus({ preventScroll: true });
-    try {
-      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-    } catch {
-      // Ignore selection errors in exotic webviews.
-    }
+    editorView.focus();
+    window.setTimeout(() => {
+      if (state.editing === session) editorView.focus();
+    }, 60);
   }
 
-  private autoSizeTextarea(session: EditingSession): void {
-    const { textarea } = session;
-    textarea.style.height = "auto";
-    textarea.style.height = `${Math.max(1, textarea.scrollHeight)}px`;
+  private toggleMarkdownFormat(
+    view: EditorView,
+    before: string,
+    after = before,
+  ): boolean {
+    const state = view.state;
+    const spec = state.changeByRange((range) => {
+      const selected = state.sliceDoc(range.from, range.to);
+      const outerStart = range.from - before.length;
+      const outerEnd = range.to + after.length;
+
+      if (range.empty) {
+        return {
+          changes: { from: range.from, insert: `${before}${after}` },
+          range: EditorSelection.cursor(range.from + before.length),
+        };
+      }
+
+      if (
+        outerStart >= 0 &&
+        outerEnd <= state.doc.length &&
+        state.sliceDoc(outerStart, range.from) === before &&
+        state.sliceDoc(range.to, outerEnd) === after
+      ) {
+        return {
+          changes: {
+            from: outerStart,
+            to: outerEnd,
+            insert: selected,
+          },
+          range: EditorSelection.range(
+            outerStart,
+            outerStart + selected.length,
+          ),
+        };
+      }
+
+      return {
+        changes: {
+          from: range.from,
+          to: range.to,
+          insert: `${before}${selected}${after}`,
+        },
+        range: EditorSelection.range(
+          range.from + before.length,
+          range.to + before.length,
+        ),
+      };
+    });
+
+    view.dispatch(
+      state.update({
+        changes: spec.changes,
+        selection: spec.selection,
+        scrollIntoView: true,
+      }),
+    );
+    view.focus();
+    return true;
+  }
+
+  private insertMarkdownLink(view: EditorView): boolean {
+    const state = view.state;
+    const spec = state.changeByRange((range) => {
+      const selected = state.sliceDoc(range.from, range.to) || "text";
+      const insert = `[${selected}](url)`;
+      const urlStart = range.from + selected.length + 3;
+      return {
+        changes: { from: range.from, to: range.to, insert },
+        range: EditorSelection.range(urlStart, urlStart + 3),
+      };
+    });
+
+    view.dispatch(
+      state.update({
+        changes: spec.changes,
+        selection: spec.selection,
+        scrollIntoView: true,
+      }),
+    );
+    view.focus();
+    return true;
+  }
+
+  private getLatexSuiteExtensions(): Extension | null {
+    const plugins = (
+      this.app as unknown as {
+        plugins?: {
+          plugins?: Record<string, { editorExtensions?: unknown }>;
+        };
+      }
+    ).plugins?.plugins;
+    const extensions = plugins?.["obsidian-latex-suite"]?.editorExtensions;
+    return extensions ? (extensions as Extension) : null;
+  }
+
+  private async ensureMarkdownLanguage(): Promise<Extension | null> {
+    if (this.markdownLanguage) return this.markdownLanguage;
+    if (!this.markdownLanguagePromise) {
+      this.markdownLanguagePromise = this.loadMarkdownLanguage();
+    }
+    return this.markdownLanguagePromise;
+  }
+
+  private findMarkdownLanguage(): Extension | null {
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const view = leaf.view as MarkdownView;
+      const editorView = (
+        view.editor as unknown as { cm?: EditorView }
+      ).cm;
+      const languageExtension = editorView?.state.facet(language);
+      if (languageExtension) return languageExtension as Extension;
+    }
+    return null;
+  }
+
+  private async loadMarkdownLanguage(): Promise<Extension | null> {
+    const existing = this.findMarkdownLanguage();
+    if (existing) {
+      this.markdownLanguage = existing;
+      return existing;
+    }
+
+    const file = this.app.vault.getMarkdownFiles()[0];
+    if (!file) return null;
+
+    const previousLeaf = this.app.workspace.activeLeaf;
+    const temporaryLeaf = this.app.workspace.getLeaf("tab");
+
+    try {
+      await temporaryLeaf.openFile(file);
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+        const languageExtension = this.findMarkdownLanguage();
+        if (languageExtension) {
+          this.markdownLanguage = languageExtension;
+          return languageExtension;
+        }
+      }
+    } catch (error) {
+      console.error("PDF Textbox: could not load Markdown language", error);
+    } finally {
+      temporaryLeaf.detach();
+      if (previousLeaf) {
+        try {
+          this.app.workspace.setActiveLeaf(previousLeaf, { focus: true });
+        } catch {
+          // The previous leaf may no longer exist.
+        }
+      }
+    }
+
+    return null;
   }
 
   private commitEditing(state: PdfViewState, cancel = false): void {
@@ -1977,8 +2353,8 @@ export default class PdfTextboxPlugin extends Plugin {
     state.editing = null;
     session.committing = true;
 
-    const { annotation, element, textarea, pageEl, isNew, original } = session;
-    const value = textarea.value;
+    const { annotation, element, editorView, pageEl, isNew, original } = session;
+    const value = editorView.state.doc.toString();
     const metrics = this.getPageMetrics(state, pageEl);
     const pageRect = this.getPageContentRect(pageEl);
     const elementRect = element.getBoundingClientRect();
@@ -2033,6 +2409,7 @@ export default class PdfTextboxPlugin extends Plugin {
     }
 
     element.remove();
+    editorView.destroy();
 
     const currentPageEl = this.findPageElement(state, session.pageNumber);
     if (currentPageEl) this.renderPage(state, currentPageEl);
@@ -2043,6 +2420,7 @@ export default class PdfTextboxPlugin extends Plugin {
     if (session?.annotation.id === id) {
       session.committing = true;
       state.editing = null;
+      session.editorView.destroy();
     }
 
     const element = state.viewerEl.querySelector<HTMLElement>(
@@ -2810,17 +3188,50 @@ export default class PdfTextboxPlugin extends Plugin {
     element.style.padding = `${2.5 * metrics.scale}px ${4.5 * metrics.scale}px`;
     element.style.borderRadius = `${3 * metrics.scale}px`;
     this.applyAnnotationColors(element, annotation);
+    this.applyCollapsedState(element, annotation);
   }
 
   private applyAnnotationColors(
     element: HTMLElement,
     annotation: PdfTextboxAnnotation,
   ): void {
-    element.style.backgroundColor = hexToRgba(
+    const background = hexToRgba(
       annotation.color,
       this.data.settings.backgroundColorOpacity,
     );
-    element.style.color = textColorForBackground(annotation.color);
+    const textColor = textColorForBackground(annotation.color);
+    element.style.backgroundColor = background;
+    element.style.color = textColor;
+
+    const collapsedIcon = element.querySelector<HTMLElement>(
+      ".pdf-textbox-collapsed-icon",
+    );
+    if (collapsedIcon) {
+      collapsedIcon.style.backgroundColor = hexToRgba(
+        annotation.color,
+        Math.max(0.7, this.data.settings.backgroundColorOpacity),
+      );
+      collapsedIcon.style.color = textColor;
+    }
+  }
+
+  private applyCollapsedState(
+    element: HTMLElement,
+    annotation: PdfTextboxAnnotation,
+  ): void {
+    element.classList.toggle("is-collapsed", annotation.collapsed);
+    if (!annotation.collapsed) {
+      element.classList.remove("is-hover-expanded");
+    }
+    const collapsedIcon = element.querySelector<HTMLElement>(
+      ".pdf-textbox-collapsed-icon",
+    );
+    if (collapsedIcon) {
+      collapsedIcon.setAttribute(
+        "aria-label",
+        annotation.collapsed ? "Expand textbox" : "Collapse textbox",
+      );
+    }
   }
 
   private openAnnotationColorMenu(

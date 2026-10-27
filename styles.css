@@ -330,6 +330,26 @@
   white-space: pre-wrap;
   overflow: hidden;
   resize: none;
+  caret-color: currentColor;
+}
+
+.pdf-textbox-annotation .pdf-textbox-editor {
+  width: 100%;
+}
+
+.pdf-textbox-annotation .pdf-textbox-editor .cm-editor {
+  width: 100%;
+  background: transparent;
+  color: inherit;
+}
+
+.pdf-textbox-annotation .pdf-textbox-editor .cm-scroller {
+  overflow: visible;
+}
+
+.pdf-textbox-annotation .pdf-textbox-editor .cm-content {
+  white-space: pre-wrap;
+  caret-color: currentColor;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -398,6 +418,99 @@
 .pdf-viewer-container.pdf-textbox-edit-mode .pdf-textbox-delete:hover,
 .pdf-textbox-annotation.is-editing .pdf-textbox-delete:hover {
   opacity: 1;
+}
+
+.pdf-textbox-collapse {
+  display: none;
+  position: absolute;
+  top: 24px;
+  right: 0;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  transform: translate(48%, 0);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 50%;
+  background-color: var(--background-primary);
+  color: var(--text-muted);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+  cursor: pointer;
+  z-index: 3;
+}
+
+.pdf-textbox-collapse svg {
+  width: 12px;
+  height: 12px;
+}
+
+.pdf-textbox-collapse:hover {
+  color: var(--text-normal);
+}
+
+.pdf-viewer-container.pdf-textbox-edit-mode .pdf-textbox-collapse {
+  display: flex;
+}
+
+.pdf-textbox-annotation.is-editing .pdf-textbox-collapse {
+  display: none;
+}
+
+/* Collapsed textbox: only a small icon; hover expands temporarily. */
+.pdf-textbox-collapsed-icon {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.24);
+  border-radius: 50%;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  cursor: pointer;
+  z-index: 4;
+  appearance: none;
+}
+
+.pdf-textbox-collapsed-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.pdf-textbox-annotation.is-collapsed {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.pdf-textbox-annotation.is-collapsed .pdf-textbox-collapsed-icon {
+  display: flex;
+}
+
+.pdf-textbox-annotation.is-collapsed:not(.is-hover-expanded) {
+  width: 28px !important;
+  height: 28px !important;
+  min-height: 28px !important;
+  padding: 0 !important;
+  background-color: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+.pdf-textbox-annotation.is-collapsed:not(.is-hover-expanded)
+  > :not(.pdf-textbox-collapsed-icon) {
+  display: none !important;
+}
+
+.pdf-textbox-annotation.is-collapsed.is-hover-expanded
+  .pdf-textbox-collapsed-icon {
+  width: 24px;
+  height: 24px;
+  transform: translate(-45%, -45%);
+  z-index: 8;
 }
 
 /* Horizontal resize handle at the bottom-right edge. */

@@ -10,6 +10,9 @@ An Obsidian plugin that adds editable Markdown/LaTeX textboxes to Obsidian's nat
 - **Drag to size**: After clicking **Place textbox**, click once for the default size or drag a rectangle over the page to define the exact size of the new textbox.
 - **Immediate editing**: The new textbox is focused right away. In edit mode, clicking an existing textbox opens its editor again.
 - **Markdown & LaTeX**: Content is rendered through Obsidian's `MarkdownRenderer`. Headings, bold/italic text, lists, tables, quotes, callouts, code blocks, images, and formulas such as `$e^{i\pi}+1=0$` work like they do in a note.
+- **Obsidian editor experience**: Textboxes use CodeMirror 6. If the **LaTeX Suite** plugin is installed and enabled, its snippets, autofractions, and other editor features work inside the textbox editor. Common Obsidian formatting hotkeys are supported: `Ctrl/Cmd+B` (bold), `Ctrl/Cmd+I` (italic), `Ctrl/Cmd+E` (inline code), `Ctrl/Cmd+Shift+X` (strikethrough), `Ctrl/Cmd+Shift+H` (highlight), and `Ctrl/Cmd+K` (link).
+- **Readable cursor**: The editor cursor follows the text contrast color and is rendered thicker, so it remains visible on light and dark backgrounds.
+- **Collapsible textboxes**: In edit mode, the minus button collapses a textbox to a small T icon. Hovering the icon temporarily expands the content; clicking the icon expands it permanently. The collapsed state is saved.
 - **Per-textbox styling**: Right-click a textbox in edit mode to change its background color, adjust its text size, or burn only that textbox into the PDF.
 - **Toolbar defaults**: A color picker and a font-size dropdown in the PDF toolbar define the defaults for new textboxes.
 - **Zoom- and scroll-stable**: Positions are stored in PDF coordinates (scale 1) and as normalized values. Overlays live inside the PDF page DOM and are realigned on zoom, rotation, scrolling, and page rendering.
@@ -47,12 +50,16 @@ BRAT downloads `main.js`, `manifest.json`, and `styles.css` from the latest GitH
 6. Turn on **Edit textboxes** for persistent editing:
    - Drag the handle at the top-left to move a textbox.
    - Drag the handle at the bottom-right to resize it horizontally and vertically.
+   - Use the minus button at the top-right to collapse the textbox to a small T icon.
+   - Hover the icon to preview the full textbox temporarily; click it to expand the textbox permanently.
    - Right-click a textbox to change its background color, change its text size, or choose **Burn this textbox into PDF**.
    - Use the × button to delete it.
    - The mode stays active until you turn it off or press **Esc**.
 7. The color picker and font-size dropdown in the PDF toolbar set the defaults for new textboxes.
 8. The **Burn textboxes into PDF** command in the command palette (`Ctrl/Cmd + P`) stores all textboxes as PDF annotations in the current PDF.
 9. To remove a burned textbox later, click its annotation in Obsidian and use the trash button in the popup, or focus it and press **Delete** / **Backspace**. The PDF is rewritten without that annotation.
+
+While editing, use the normal Markdown editor shortcuts (`Ctrl/Cmd+B`, `Ctrl/Cmd+I`, etc.). With **LaTeX Suite** installed and enabled, its math snippets and autofractions also work inside textboxes.
 
 The **Edit textboxes** state is saved in the plugin settings and is restored after switching PDFs, reloading the plugin, or restarting Obsidian.
 
@@ -117,6 +124,7 @@ The plugin stores its data in `data.json`:
       "text": "**Comment** with $x^2$",
       "fontSize": 12,
       "color": "#ffd54f",
+      "collapsed": false,
       "createdAt": 1760000000000,
       "updatedAt": 1760000000000
     }
@@ -128,6 +136,7 @@ The plugin stores its data in `data.json`:
 - `nx`, `ny`, `nw`, and `nh` are normalized 0–1 values used for rendering.
 - `text` contains the original Markdown/LaTeX source.
 - `color` is the background color of that textbox.
+- `collapsed` stores whether the textbox is minimized to its hoverable icon.
 - `editModeEnabled` remembers whether edit mode should be on after reload or PDF switches.
 - File paths are updated automatically when a PDF is renamed or moved; deleting a PDF removes its textboxes.
 
@@ -140,7 +149,7 @@ Obsidian does not expose a public API for its PDF viewer. The plugin accesses in
 - `.pdf-toolbar-right` as the anchor for the toolbar controls
 - events `pagesinit`, `pagerendered`, `scalechanging`, `rotationchanging`, and `resize`
 
-Markdown is rendered with `MarkdownRenderer.render()` and a view-scoped `Component`. For burning, textboxes are rendered off-screen with the same CSS classes and captured as PNGs with `html2canvas`. `pdf-lib` creates a Form XObject appearance stream for each image and adds a `/Stamp` annotation to the page's `/Annots` array. The file is then overwritten via `vault.modifyBinary` and the burned entries are removed from `data.json`. The delete action in the annotation popup resolves the PDF.js annotation ID back to the PDF object and removes that annotation from `/Annots`.
+Markdown is rendered with `MarkdownRenderer.render()` and a view-scoped `Component`. The inline editor is a CodeMirror 6 `EditorView` using Obsidian's Markdown language facet and `editorLivePreviewField`; when the **LaTeX Suite** plugin is enabled, its registered editor extensions are added to the editor state. For burning, textboxes are rendered off-screen with the same CSS classes and captured as PNGs with `html2canvas`. `pdf-lib` creates a Form XObject appearance stream for each image and adds a `/Stamp` annotation to the page's `/Annots` array. The file is then overwritten via `vault.modifyBinary` and the burned entries are removed from `data.json`. The delete action in the annotation popup resolves the PDF.js annotation ID back to the PDF object and removes that annotation from `/Annots`.
 
 Coordinates are measured with `getBoundingClientRect()` on `.canvasWrapper`. That rectangle is already viewport-relative, so the PDF container's scroll offset is included; scale is derived from `viewport.width / pageView.scale` or `rect.width / baseWidth`.
 
@@ -161,8 +170,8 @@ The release version must match in `package.json`, `manifest.json`, and `versions
 1. Bump the version in `package.json`, `manifest.json`, and `versions.json`.
 2. Commit and push a tag:
    ```bash
-   git tag 0.1.2
-   git push origin 0.1.2
+   git tag 0.1.3
+   git push origin 0.1.3
    ```
 3. The GitHub workflow builds the plugin and attaches `main.js`, `manifest.json`, `styles.css`, and `versions.json` to the release.
 4. BRAT picks up the release automatically.
@@ -171,6 +180,7 @@ The release version must match in `package.json`, `manifest.json`, and `versions
 
 - Textboxes only (no freehand drawing, highlights, or shapes).
 - Interactive Markdown elements such as checkboxes and links are visible but not clickable in the PDF view, because overlays pass clicks through outside edit mode.
+- LaTeX Suite integration requires the LaTeX Suite plugin to be installed and enabled. Other third-party editor extensions are not automatically included in the textbox editor.
 - Burning stores textboxes as PDF Stamp annotations with image appearances; their text is not selectable, and the original PDF is overwritten.
 - Burned annotations can be removed later with a PDF annotation editor or directly in Obsidian via the trash button / **Delete** / **Backspace** when the annotation is focused. They are no longer managed by the textbox editor after burning.
 - Data lives per vault in `data.json`; it is only written into a PDF through the burn command.
