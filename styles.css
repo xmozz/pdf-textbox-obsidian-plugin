@@ -1,0 +1,581 @@
+/* -------------------------------------------------------------------------- */
+/*  Toolbar buttons                                                            */
+/* -------------------------------------------------------------------------- */
+
+.pdf-textbox-tool.is-active {
+  color: var(--text-on-accent);
+  background-color: var(--interactive-accent);
+}
+
+.pdf-textbox-tool.is-active:hover {
+  color: var(--text-on-accent);
+  background-color: var(--interactive-accent-hover);
+}
+
+.pdf-textbox-color-tool {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 22px;
+  height: 22px;
+  margin: 0 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  appearance: none;
+  cursor: pointer;
+}
+
+.pdf-textbox-color-tool::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.pdf-textbox-color-tool::-webkit-color-swatch {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 50%;
+}
+
+.pdf-textbox-color-tool:hover::-webkit-color-swatch {
+  border-color: var(--text-muted);
+}
+
+.pdf-textbox-size-tool {
+  flex: 0 0 auto;
+  align-self: center;
+  height: 26px;
+  min-width: 54px;
+  margin: 0 2px;
+  padding: 0 4px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background-color: var(--background-primary);
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller, 11px);
+  cursor: pointer;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Overlay layer                                                              */
+/* -------------------------------------------------------------------------- */
+
+.pdf-textbox-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  overflow: visible;
+  pointer-events: none;
+}
+
+/* Placement mode: the overlay catches the click and the PDF layers are
+   click-through so the box lands exactly where the user clicked. */
+.pdf-viewer-container.pdf-textbox-create-mode {
+  cursor: crosshair;
+}
+
+.pdf-viewer-container.pdf-textbox-create-mode .pdf-textbox-layer {
+  pointer-events: auto;
+}
+
+.pdf-viewer-container.pdf-textbox-create-mode .textLayer,
+.pdf-viewer-container.pdf-textbox-create-mode .annotationLayer,
+.pdf-viewer-container.pdf-textbox-create-mode .annotationEditorLayer {
+  pointer-events: none;
+}
+
+/* Edit mode only makes existing boxes interactive; blank page areas still
+   reach the native PDF viewer (text selection, links, ...). */
+.pdf-viewer-container.pdf-textbox-edit-mode .pdf-textbox-annotation {
+  pointer-events: auto;
+  cursor: text;
+}
+
+/* While placing, even editable boxes must not intercept the drag. */
+.pdf-viewer-container.pdf-textbox-create-mode .pdf-textbox-annotation,
+.pdf-viewer-container.pdf-textbox-create-mode .pdf-textbox-annotation * {
+  pointer-events: none;
+}
+
+.pdf-textbox-placement {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1.5px dashed var(--interactive-accent);
+  border-radius: 2px;
+  background-color: rgba(124, 77, 255, 0.16);
+  background-color: color-mix(
+    in srgb,
+    var(--interactive-accent) 18%,
+    transparent
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Annotation                                                                 */
+/* -------------------------------------------------------------------------- */
+
+.pdf-textbox-annotation {
+  position: absolute;
+  box-sizing: border-box;
+  height: auto;
+  min-width: 24px;
+  color: #1c1c1c;
+  background-color: rgba(255, 214, 64, 0.58);
+  border: 1px solid rgba(0, 0, 0, 0.22);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: visible;
+  line-height: 1.35;
+  font-family: var(--font-text);
+  pointer-events: none;
+  user-select: none;
+}
+
+.pdf-textbox-annotation.is-editing {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+  cursor: text;
+  pointer-events: auto;
+  user-select: text;
+  z-index: 7;
+}
+
+.pdf-textbox-annotation.is-dragging {
+  opacity: 0.82;
+  cursor: grabbing;
+}
+
+.pdf-textbox-annotation.is-resizing {
+  opacity: 0.92;
+}
+
+.pdf-textbox-body {
+  margin: 0;
+  padding: 0;
+  min-height: 1.35em;
+}
+
+.pdf-textbox-body.markdown-rendered {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* Keep Markdown readable on the chosen textbox background instead of
+   inheriting the app theme's (possibly light) text colours. */
+.pdf-textbox-body.markdown-rendered :is(
+    p,
+    li,
+    h1,
+    h2,
+    h3,
+    h4,
+    h5,
+    h6,
+    strong,
+    em,
+    del,
+    blockquote,
+    figcaption,
+    table,
+    th,
+    td,
+    code,
+    a,
+    .tag,
+    .callout-title,
+    .callout-content
+  ) {
+  color: inherit;
+}
+
+.pdf-textbox-body.markdown-rendered a {
+  text-decoration: underline;
+}
+
+.pdf-textbox-body.markdown-rendered blockquote {
+  border-inline-start: 2px solid currentColor;
+}
+
+.pdf-textbox-body.markdown-rendered pre,
+.pdf-textbox-body.markdown-rendered code {
+  background-color: rgba(127, 127, 127, 0.14);
+}
+
+.pdf-textbox-body.markdown-rendered pre code {
+  background-color: transparent;
+}
+
+.pdf-textbox-body.markdown-rendered .callout {
+  background-color: rgba(127, 127, 127, 0.12);
+}
+
+.pdf-textbox-body.markdown-rendered > :first-child {
+  margin-top: 0;
+}
+
+.pdf-textbox-body.markdown-rendered > :last-child {
+  margin-bottom: 0;
+}
+
+.pdf-textbox-body.markdown-rendered p {
+  margin: 0 0 0.35em;
+}
+
+.pdf-textbox-body.markdown-rendered ul,
+.pdf-textbox-body.markdown-rendered ol {
+  margin: 0.2em 0 0.35em;
+  padding-inline-start: 1.25em;
+}
+
+.pdf-textbox-body.markdown-rendered li {
+  margin: 0.1em 0;
+}
+
+.pdf-textbox-body.markdown-rendered h1,
+.pdf-textbox-body.markdown-rendered h2,
+.pdf-textbox-body.markdown-rendered h3,
+.pdf-textbox-body.markdown-rendered h4,
+.pdf-textbox-body.markdown-rendered h5,
+.pdf-textbox-body.markdown-rendered h6 {
+  margin: 0.25em 0 0.15em;
+  line-height: 1.2;
+}
+
+.pdf-textbox-body.markdown-rendered h1 {
+  font-size: 1.45em;
+}
+
+.pdf-textbox-body.markdown-rendered h2 {
+  font-size: 1.3em;
+}
+
+.pdf-textbox-body.markdown-rendered h3 {
+  font-size: 1.18em;
+}
+
+.pdf-textbox-body.markdown-rendered h4,
+.pdf-textbox-body.markdown-rendered h5,
+.pdf-textbox-body.markdown-rendered h6 {
+  font-size: 1.05em;
+}
+
+.pdf-textbox-body.markdown-rendered blockquote {
+  margin: 0.25em 0;
+  padding-inline-start: 0.6em;
+}
+
+.pdf-textbox-body.markdown-rendered pre {
+  margin: 0.25em 0;
+  padding: 0.35em 0.45em;
+  overflow: hidden;
+  white-space: pre-wrap;
+}
+
+.pdf-textbox-body.markdown-rendered code {
+  font-size: 0.9em;
+}
+
+.pdf-textbox-body.markdown-rendered img {
+  max-width: 100%;
+  height: auto;
+}
+
+.pdf-textbox-body.markdown-rendered table {
+  max-width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+
+.pdf-textbox-body.markdown-rendered .callout {
+  margin: 0.25em 0;
+  padding: 0.35em 0.5em;
+}
+
+.pdf-textbox-body.markdown-rendered .math {
+  font-size: 1em;
+}
+
+.pdf-textbox-body.markdown-rendered mjx-container {
+  color: inherit;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.pdf-textbox-body.is-hidden {
+  display: none;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Editor                                                                     */
+/* -------------------------------------------------------------------------- */
+
+.pdf-textbox-annotation textarea.pdf-textbox-input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 1.35em;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+  text-align: inherit;
+  white-space: pre-wrap;
+  overflow: hidden;
+  resize: none;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Handles (visible while edit mode is active)                                */
+/* -------------------------------------------------------------------------- */
+
+.pdf-textbox-grip {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  transform: translate(-45%, -45%);
+  border-radius: 50%;
+  background-color: var(--interactive-accent);
+  border: 1px solid var(--background-primary);
+  cursor: grab;
+  z-index: 2;
+}
+
+.pdf-textbox-grip:active {
+  cursor: grabbing;
+}
+
+.pdf-viewer-container.pdf-textbox-edit-mode .pdf-textbox-grip {
+  display: block;
+}
+
+.pdf-textbox-delete {
+  display: none;
+  position: absolute;
+  top: 0;
+  right: 0;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  transform: translate(48%, -48%);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 50%;
+  background-color: var(--background-primary);
+  color: var(--text-muted);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+  cursor: pointer;
+  z-index: 3;
+}
+
+.pdf-textbox-delete svg {
+  width: 12px;
+  height: 12px;
+}
+
+.pdf-textbox-delete:hover {
+  color: var(--text-error);
+  border-color: var(--text-error);
+}
+
+.pdf-viewer-container.pdf-textbox-edit-mode .pdf-textbox-delete,
+.pdf-textbox-annotation.is-editing .pdf-textbox-delete {
+  display: flex;
+  opacity: 0.65;
+}
+
+.pdf-viewer-container.pdf-textbox-edit-mode .pdf-textbox-delete:hover,
+.pdf-textbox-annotation.is-editing .pdf-textbox-delete:hover {
+  opacity: 1;
+}
+
+/* Horizontal resize handle at the bottom-right edge. */
+.pdf-textbox-resize {
+  display: none;
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 11px;
+  height: 11px;
+  transform: translate(45%, 45%);
+  border: 1px solid var(--background-primary);
+  border-radius: 2px;
+  background-color: var(--interactive-accent);
+  cursor: nwse-resize;
+  z-index: 2;
+}
+
+.pdf-viewer-container.pdf-textbox-edit-mode .pdf-textbox-resize {
+  display: block;
+}
+
+.pdf-textbox-annotation.is-resizing .pdf-textbox-resize {
+  cursor: nwse-resize;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Right-click colour menu                                                    */
+/* -------------------------------------------------------------------------- */
+
+.pdf-textbox-color-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 176px;
+  padding: 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background-color: var(--background-secondary);
+  box-shadow: var(--shadow-s);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pdf-textbox-color-menu-title {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller, 12px);
+  font-weight: var(--font-medium, 500);
+}
+
+.pdf-textbox-color-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 28px);
+  gap: 6px;
+}
+
+.pdf-textbox-color-swatch {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.16) !important;
+  border-radius: 50%;
+  background-color: var(--pdf-textbox-swatch) !important;
+  background-image: none !important;
+  cursor: pointer;
+  appearance: none;
+}
+
+.pdf-textbox-color-swatch.is-selected {
+  box-shadow: 0 0 0 2px var(--interactive-accent);
+}
+
+.pdf-textbox-color-custom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 2px;
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller, 12px);
+  cursor: pointer;
+}
+
+.pdf-textbox-color-custom-input {
+  width: 30px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.pdf-textbox-color-custom-input::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+
+.pdf-textbox-color-custom-input::-webkit-color-swatch {
+  border: 0;
+  border-radius: 2px;
+}
+
+.pdf-textbox-size-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 2px;
+}
+
+.pdf-textbox-size-label {
+  flex: 1;
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller, 12px);
+}
+
+.pdf-textbox-size-button {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background-color: var(--background-primary) !important;
+  color: var(--text-normal) !important;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  appearance: none;
+}
+
+.pdf-textbox-size-button:hover {
+  background-color: var(--background-modifier-hover) !important;
+}
+
+.pdf-textbox-size-value {
+  min-width: 18px;
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller, 12px);
+  text-align: center;
+}
+
+.pdf-textbox-menu-separator {
+  height: 1px;
+  margin: 2px 0;
+  background-color: var(--background-modifier-border);
+}
+
+.pdf-textbox-menu-item {
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller, 12px);
+  text-align: left;
+  cursor: pointer;
+  appearance: none;
+}
+
+.pdf-textbox-menu-item:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Off-screen renderer used when burning textboxes into a PDF                 */
+/* -------------------------------------------------------------------------- */
+
+.pdf-textbox-burn-host {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.pdf-textbox-burn-host .pdf-textbox-annotation {
+  position: relative;
+  left: auto;
+  top: auto;
+  pointer-events: none;
+}
