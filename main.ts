@@ -17,9 +17,11 @@ import {
 import html2canvas from "html2canvas";
 import {
   PDFArray,
+  PDFDict,
   PDFDocument,
   PDFHexString,
   PDFName,
+  PDFRef,
   PDFString,
 } from "pdf-lib";
 
@@ -61,6 +63,8 @@ export interface PdfTextboxSettings {
   backgroundColorOpacity: number;
   /** Show the overwrite confirmation before burning into the PDF. */
   confirmBeforeBurn: boolean;
+  /** Keep textbox edit mode enabled across PDF switches and restarts. */
+  editModeEnabled: boolean;
 }
 
 export const DEFAULT_SETTINGS: PdfTextboxSettings = {
@@ -69,6 +73,7 @@ export const DEFAULT_SETTINGS: PdfTextboxSettings = {
   backgroundColor: "#ffd54f",
   backgroundColorOpacity: 0.58,
   confirmBeforeBurn: true,
+  editModeEnabled: false,
 };
 
 /**
@@ -243,8 +248,10 @@ interface PdfViewState {
   cleanups: Array<() => void>;
   observer: MutationObserver | null;
   resizeObserver: ResizeObserver | null;
+  popupObserver: MutationObserver | null;
   editing: EditingSession | null;
   placement: PlacementSession | null;
+  activeBurnedAnnotationId: string | null;
   renderFrame: number | null;
   renderTimer: number | null;
 }
@@ -364,6 +371,10 @@ function coerceSettings(raw: unknown): PdfTextboxSettings {
       typeof source.confirmBeforeBurn === "boolean"
         ? source.confirmBeforeBurn
         : DEFAULT_SETTINGS.confirmBeforeBurn,
+    editModeEnabled:
+      typeof source.editModeEnabled === "boolean"
+        ? source.editModeEnabled
+        : DEFAULT_SETTINGS.editModeEnabled,
   };
 }
 
@@ -879,7 +890,7 @@ export default class PdfTextboxPlugin extends Plugin {
       pdfViewer,
       eventBus: pdfViewer.eventBus ?? host.eventBus ?? null,
       filePath,
-      editMode: false,
+      editMode: this.data.settings.editModeEnabled,
       createMode: false,
       component,
       createButton: null,
@@ -889,11 +900,15 @@ export default class PdfTextboxPlugin extends Plugin {
       cleanups: [],
       observer: null,
       resizeObserver: null,
+      popupObserver: null,
       editing: null,
       placement: null,
+      activeBurnedAnnotationId: null,
       renderFrame: null,
       renderTimer: null,
     };
+
+    viewerContainerEl.classList.toggle(EDIT_MODE_CLASS, state.editMode);
 
     const ownerDocument = viewerContainerEl.ownerDocument;
     const onPointerDown = (event: PointerEvent) =>
@@ -967,12 +982,111 @@ export default class PdfTextboxPlugin extends Plugin {
       win?.removeEventListener("keyup", onEarlyNavigationKey, true);
     });
 
+    const findStampAtPoint = (
+      clientX: number,
+      clientY: number,
+      target: Element | null,
+    ): HTMLElement | null => {
+      const direct = target?.closest?.(".stampAnnotation");
+      if (direct instanceof HTMLElement) return direct;
+
+      const page = target?.closest?.(PAGE_SELECTOR);
+      if (!(page instanceof HTMLElement)) return null;
+      const stamps = Array.from(
+        page.querySelectorAll<HTMLElement>(".stampAnnotation"),
+      );
+      for (let index = stamps.length - 1; index >= 0; index -= 1) {
+        const stamp = stamps[index];
+        if (!stamp) continue;
+        const rect = stamp.getBoundingClientRect();
+        if (
+          clientX >= rect.left &&
+          clientX <= rect.right &&
+          clientY >= rect.top &&
+          clientY <= rect.bottom
+        ) {
+          return stamp;
+        }
+      }
+      return null;
+    };
+
+    const activateStamp = (
+      clientX: number,
+      clientY: number,
+      target: Element | null,
+    ): void => {
+      const stamp = findStampAtPoint(clientX, clientY, target);
+      if (!stamp) return;
+      state.activeBurnedAnnotationId = stamp.getAttribute(
+        "data-annotation-id",
+      );
+    };
+
+    const onStampPointer = (event: PointerEvent) => {
+      activateStamp(event.clientX, event.clientY, event.target as Element);
+    };
+    const onStampClick = (event: MouseEvent) => {
+      activateStamp(event.clientX, event.clientY, event.target as Element);
+    };
+    const onStampFocus = (event: FocusEvent) => {
+      const target = event.target as Element | null;
+      const stamp = target?.closest?.(".stampAnnotation");
+      if (!(stamp instanceof HTMLElement)) return;
+      state.activeBurnedAnnotationId = stamp.getAttribute(
+        "data-annotation-id",
+      );
+    };
+    viewerContainerEl.addEventListener("pointerdown", onStampPointer, true);
+    viewerContainerEl.addEventListener("click", onStampClick, true);
+    viewerContainerEl.addEventListener("focusin", onStampFocus, true);
+    state.cleanups.push(() => {
+      viewerContainerEl.removeEventListener(
+        "pointerdown",
+        onStampPointer,
+        true,
+      );
+      viewerContainerEl.removeEventListener("click", onStampClick, true);
+      viewerContainerEl.removeEventListener("focusin", onStampFocus, true);
+    });
+
+    const onAnnotationKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      if (!state.activeBurnedAnnotationId) return;
+      const target = event.target as Element | null;
+      if (!target?.closest?.(".stampAnnotation, .popup")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void this.deleteBurnedPdfAnnotation(
+        state,
+        state.activeBurnedAnnotationId,
+      );
+    };
+    viewerContainerEl.addEventListener("keydown", onAnnotationKeyDown, true);
+    state.cleanups.push(() =>
+      viewerContainerEl.removeEventListener(
+        "keydown",
+        onAnnotationKeyDown,
+        true,
+      ),
+    );
+
     const Observer = ownerDocument.defaultView?.MutationObserver;
     if (Observer) {
       const observer = new Observer(() => this.scheduleRenderAll(state));
       observer.observe(viewerEl, { childList: true });
       state.observer = observer;
       state.cleanups.push(() => observer.disconnect());
+
+      const popupObserver = new Observer(() =>
+        this.enhanceAnnotationPopups(state),
+      );
+      popupObserver.observe(viewerContainerEl, {
+        childList: true,
+        subtree: true,
+      });
+      state.popupObserver = popupObserver;
+      state.cleanups.push(() => popupObserver.disconnect());
     }
 
     const ViewResizeObserver = ownerDocument.defaultView?.ResizeObserver;
@@ -1047,6 +1161,7 @@ export default class PdfTextboxPlugin extends Plugin {
 
     state.observer?.disconnect();
     state.resizeObserver?.disconnect();
+    state.popupObserver?.disconnect();
     state.createButton?.remove();
     state.editButton?.remove();
     state.colorButton?.remove();
@@ -1226,13 +1341,28 @@ export default class PdfTextboxPlugin extends Plugin {
     state.sizeButton = sizeButton;
   }
 
-  private setEditMode(state: PdfViewState, enabled: boolean): void {
+  private setEditMode(
+    state: PdfViewState,
+    enabled: boolean,
+    persist = true,
+  ): void {
     if (!enabled) this.commitEditing(state);
 
     state.editMode = enabled;
     state.viewerContainerEl.classList.toggle(EDIT_MODE_CLASS, enabled);
     state.editButton?.toggleClass("is-active", enabled);
     state.editButton?.setAttr("aria-pressed", enabled ? "true" : "false");
+
+    if (!persist) return;
+
+    this.data.settings.editModeEnabled = enabled;
+    this.requestSave();
+
+    for (const otherState of this.states.values()) {
+      if (otherState !== state) {
+        this.setEditMode(otherState, enabled, false);
+      }
+    }
   }
 
   private setCreateMode(state: PdfViewState, enabled: boolean): void {
@@ -2325,6 +2455,157 @@ export default class PdfTextboxPlugin extends Plugin {
           .catch(reject);
       }, "image/png");
     });
+  }
+
+  private enhanceAnnotationPopups(state: PdfViewState): void {
+    if (this.states.get(state.leaf) !== state) return;
+
+    const popups = state.viewerEl.querySelectorAll<HTMLElement>(".popup");
+    for (const popup of Array.from(popups)) {
+      if (popup.querySelector(".pdf-textbox-annotation-delete")) continue;
+      const title = popup.querySelector(".popupTitle")?.textContent?.trim();
+      if (title !== "PDF Textbox") continue;
+      if (!state.activeBurnedAnnotationId) continue;
+
+      const doc = popup.ownerDocument;
+      let actions =
+        popup.querySelector<HTMLElement>(
+          ".pdf-plus-annotation-icon-container",
+        ) ?? null;
+
+      if (!actions) {
+        const meta = popup.querySelector<HTMLElement>(".popupMeta");
+        if (!meta) continue;
+        actions = doc.createElement("div");
+        actions.className = "pdf-textbox-popup-actions";
+        meta.appendChild(actions);
+      }
+
+      const button = doc.createElement("div");
+      button.className = "clickable-icon pdf-textbox-annotation-delete";
+      button.setAttribute("role", "button");
+      button.tabIndex = 0;
+      button.setAttribute("aria-label", "Delete textbox annotation");
+      button.setAttribute("title", "Delete textbox annotation");
+      setIcon(button, "trash-2");
+
+      const deleteCurrent = (): void => {
+        const id = state.activeBurnedAnnotationId;
+        if (id) void this.deleteBurnedPdfAnnotation(state, id);
+      };
+
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        deleteCurrent();
+      });
+      button.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        event.stopPropagation();
+        deleteCurrent();
+      });
+
+      actions.appendChild(button);
+      popup.dataset.pdfTextboxDelete = "1";
+    }
+  }
+
+  private async deleteBurnedPdfAnnotation(
+    state: PdfViewState,
+    pdfAnnotationId: string,
+  ): Promise<void> {
+    if (this.burning) {
+      new Notice("A burn operation is already running.");
+      return;
+    }
+
+    const sourceFile = this.app.vault.getAbstractFileByPath(state.filePath);
+    if (!(sourceFile instanceof TFile) || sourceFile.extension !== "pdf") {
+      new Notice("The current PDF could not be found.");
+      return;
+    }
+
+    const match = /^(\d+)R(\d*)$/.exec(pdfAnnotationId);
+    if (!match) {
+      new Notice("The burned textbox annotation could not be identified.");
+      return;
+    }
+    const objectNumber = Number(match[1]);
+    const generationNumber = match[2] ? Number(match[2]) : 0;
+
+    try {
+      const sourceBytes = await this.app.vault.readBinary(sourceFile);
+      const pdf = await PDFDocument.load(sourceBytes, {
+        ignoreEncryption: true,
+        updateMetadata: false,
+      });
+      let removed = false;
+
+      for (const page of pdf.getPages()) {
+        const annotations = page.node.lookupMaybe(
+          PDFName.of("Annots"),
+          PDFArray,
+        );
+        if (!annotations) continue;
+
+        for (let index = annotations.size() - 1; index >= 0; index -= 1) {
+          const ref = annotations.get(index);
+          if (!(ref instanceof PDFRef)) continue;
+          if (
+            ref.objectNumber !== objectNumber ||
+            ref.generationNumber !== generationNumber
+          ) {
+            continue;
+          }
+
+          const annotation = pdf.context.lookup(ref, PDFDict);
+          const author = annotation.lookup(PDFName.of("T"));
+          const authorText =
+            author instanceof PDFHexString || author instanceof PDFString
+              ? author.decodeText()
+              : "";
+          if (authorText !== "PDF Textbox") continue;
+
+          annotations.remove(index);
+          pdf.context.delete(ref);
+          removed = true;
+        }
+      }
+
+      if (!removed) {
+        new Notice("The burned textbox annotation could not be found.");
+        return;
+      }
+
+      const saved = await pdf.save();
+      const targetBytes = saved.buffer.slice(
+        saved.byteOffset,
+        saved.byteOffset + saved.byteLength,
+      ) as ArrayBuffer;
+      await this.app.vault.modifyBinary(sourceFile, targetBytes);
+      new Notice("Burned textbox annotation deleted.");
+
+      for (const otherState of [...this.states.values()]) {
+        if (otherState.filePath !== state.filePath) continue;
+        if (typeof otherState.view.loadFile === "function") {
+          try {
+            await otherState.view.loadFile(sourceFile);
+          } catch (error) {
+            console.error("PDF Textbox: could not reload PDF", error);
+          }
+        }
+      }
+      this.scheduleSync(0);
+    } catch (error) {
+      console.error("PDF Textbox: could not delete annotation", error);
+      new Notice(
+        `Could not delete the textbox annotation: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        8000,
+      );
+    }
   }
 
   private rotateCanvasForPdf(

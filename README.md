@@ -6,7 +6,7 @@ An Obsidian plugin that adds editable Markdown/LaTeX textboxes to Obsidian's nat
 
 - **Two toolbar buttons** in the native PDF toolbar (not the hidden find bar):
   - **Place textbox (one-shot)**: stays armed for one placement and deselects itself after a textbox is created.
-  - **Edit textboxes**: stays active until you turn it off. In this mode you can move, edit, resize, recolor, and delete existing textboxes.
+  - **Edit textboxes**: stays active until you turn it off. In this mode you can move, edit, resize, recolor, and delete existing textboxes. This state is remembered across PDF switches, plugin reloads, and Obsidian restarts.
 - **Drag to size**: After clicking **Place textbox**, click once for the default size or drag a rectangle over the page to define the exact size of the new textbox.
 - **Immediate editing**: The new textbox is focused right away. In edit mode, clicking an existing textbox opens its editor again.
 - **Markdown & LaTeX**: Content is rendered through Obsidian's `MarkdownRenderer`. Headings, bold/italic text, lists, tables, quotes, callouts, code blocks, images, and formulas such as `$e^{i\pi}+1=0$` work like they do in a note.
@@ -14,7 +14,7 @@ An Obsidian plugin that adds editable Markdown/LaTeX textboxes to Obsidian's nat
 - **Toolbar defaults**: A color picker and a font-size dropdown in the PDF toolbar define the defaults for new textboxes.
 - **Zoom- and scroll-stable**: Positions are stored in PDF coordinates (scale 1) and as normalized values. Overlays live inside the PDF page DOM and are realigned on zoom, rotation, scrolling, and page rendering.
 - **Persistent**: All textboxes are saved in the plugin's `data.json` (vault path, page, coordinates, size, text, color, and font size).
-- **Burn into PDF**: The **Burn textboxes into PDF** command replaces the current PDF with a version that stores all textboxes as standard PDF Stamp annotations. You can also burn a single textbox from its context menu. Burned annotations can be removed later with a PDF annotation editor.
+- **Burn into PDF**: The **Burn textboxes into PDF** command replaces the current PDF with a version that stores all textboxes as standard PDF Stamp annotations. You can also burn a single textbox from its context menu. Clicking a burned annotation in Obsidian shows a trash button; you can also focus it and press **Delete** or **Backspace** to remove it.
 - **Multiple PDF tabs** are supported at the same time.
 
 ## Installation via BRAT (beta)
@@ -52,6 +52,9 @@ BRAT downloads `main.js`, `manifest.json`, and `styles.css` from the latest GitH
    - The mode stays active until you turn it off or press **Esc**.
 7. The color picker and font-size dropdown in the PDF toolbar set the defaults for new textboxes.
 8. The **Burn textboxes into PDF** command in the command palette (`Ctrl/Cmd + P`) stores all textboxes as PDF annotations in the current PDF.
+9. To remove a burned textbox later, click its annotation in Obsidian and use the trash button in the popup, or focus it and press **Delete** / **Backspace**. The PDF is rewritten without that annotation.
+
+The **Edit textboxes** state is saved in the plugin settings and is restored after switching PDFs, reloading the plugin, or restarting Obsidian.
 
 Textboxes are visible outside edit mode but pass clicks through, so the PDF remains normally usable.
 
@@ -80,7 +83,7 @@ The **Burn textboxes into PDF** command:
 
 Use **Right-click → Burn this textbox into PDF** to burn only a single textbox.
 
-No copy is created. After burning, the textbox is a regular PDF annotation named **PDF Textbox**; the rest of the PDF remains unchanged. Because it is an annotation rather than page content, you can remove it later with any PDF annotation editor. Because the original file is replaced directly, make a backup first if needed. The warning can be disabled permanently with **Don't show again** in the dialog or **Confirm before burning** in the settings.
+No copy is created. After burning, the textbox is a regular PDF annotation named **PDF Textbox**; the rest of the PDF remains unchanged. Because it is an annotation rather than page content, you can remove it later with any PDF annotation editor. In Obsidian, click the burned annotation and use the trash button in its popup, or press **Delete** / **Backspace** while it is focused. Because the original file is replaced directly, make a backup first if needed. The warning can be disabled permanently with **Don't show again** in the dialog or **Confirm before burning** in the settings.
 
 ## Data model
 
@@ -94,7 +97,8 @@ The plugin stores its data in `data.json`:
     "defaultFontSize": 12,
     "backgroundColor": "#ffd54f",
     "backgroundColorOpacity": 0.58,
-    "confirmBeforeBurn": true
+    "confirmBeforeBurn": true,
+    "editModeEnabled": true
   },
   "annotations": [
     {
@@ -124,6 +128,7 @@ The plugin stores its data in `data.json`:
 - `nx`, `ny`, `nw`, and `nh` are normalized 0–1 values used for rendering.
 - `text` contains the original Markdown/LaTeX source.
 - `color` is the background color of that textbox.
+- `editModeEnabled` remembers whether edit mode should be on after reload or PDF switches.
 - File paths are updated automatically when a PDF is renamed or moved; deleting a PDF removes its textboxes.
 
 ## Technical notes
@@ -135,7 +140,7 @@ Obsidian does not expose a public API for its PDF viewer. The plugin accesses in
 - `.pdf-toolbar-right` as the anchor for the toolbar controls
 - events `pagesinit`, `pagerendered`, `scalechanging`, `rotationchanging`, and `resize`
 
-Markdown is rendered with `MarkdownRenderer.render()` and a view-scoped `Component`. For burning, textboxes are rendered off-screen with the same CSS classes and captured as PNGs with `html2canvas`. `pdf-lib` creates a Form XObject appearance stream for each image and adds a `/Stamp` annotation to the page's `/Annots` array. The file is then overwritten via `vault.modifyBinary` and the burned entries are removed from `data.json`.
+Markdown is rendered with `MarkdownRenderer.render()` and a view-scoped `Component`. For burning, textboxes are rendered off-screen with the same CSS classes and captured as PNGs with `html2canvas`. `pdf-lib` creates a Form XObject appearance stream for each image and adds a `/Stamp` annotation to the page's `/Annots` array. The file is then overwritten via `vault.modifyBinary` and the burned entries are removed from `data.json`. The delete action in the annotation popup resolves the PDF.js annotation ID back to the PDF object and removes that annotation from `/Annots`.
 
 Coordinates are measured with `getBoundingClientRect()` on `.canvasWrapper`. That rectangle is already viewport-relative, so the PDF container's scroll offset is included; scale is derived from `viewport.width / pageView.scale` or `rect.width / baseWidth`.
 
@@ -156,8 +161,8 @@ The release version must match in `package.json`, `manifest.json`, and `versions
 1. Bump the version in `package.json`, `manifest.json`, and `versions.json`.
 2. Commit and push a tag:
    ```bash
-   git tag 0.1.1
-   git push origin 0.1.1
+   git tag 0.1.2
+   git push origin 0.1.2
    ```
 3. The GitHub workflow builds the plugin and attaches `main.js`, `manifest.json`, `styles.css`, and `versions.json` to the release.
 4. BRAT picks up the release automatically.
@@ -167,7 +172,7 @@ The release version must match in `package.json`, `manifest.json`, and `versions
 - Textboxes only (no freehand drawing, highlights, or shapes).
 - Interactive Markdown elements such as checkboxes and links are visible but not clickable in the PDF view, because overlays pass clicks through outside edit mode.
 - Burning stores textboxes as PDF Stamp annotations with image appearances; their text is not selectable, and the original PDF is overwritten.
-- Burned annotations can be removed later with a PDF annotation editor, but they are no longer managed by this plugin after burning.
+- Burned annotations can be removed later with a PDF annotation editor or directly in Obsidian via the trash button / **Delete** / **Backspace** when the annotation is focused. They are no longer managed by the textbox editor after burning.
 - Data lives per vault in `data.json`; it is only written into a PDF through the burn command.
 - No device sync beyond normal vault synchronization.
 - Internal PDF.js structures can change with Obsidian updates.

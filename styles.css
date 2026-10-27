@@ -561,6 +561,27 @@
   background-color: var(--background-modifier-hover);
 }
 
+/* Delete action inside PDF.js annotation popups for burned textboxes. */
+.pdf-textbox-popup-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pdf-textbox-annotation-delete {
+  color: var(--text-error);
+}
+
+.pdf-textbox-annotation-delete:hover {
+  color: var(--text-error);
+  background-color: var(--background-modifier-hover);
+}
+
+.pdf-textbox-annotation-delete svg {
+  width: 16px;
+  height: 16px;
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Off-screen renderer used when burning textboxes into a PDF                 */
 /* -------------------------------------------------------------------------- */
