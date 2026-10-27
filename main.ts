@@ -2011,7 +2011,15 @@ export default class PdfTextboxPlugin extends Plugin {
     pageEl: HTMLElement | null,
     isNew: boolean,
   ): void {
-    void this.startEditingAsync(state, annotation, element, pageEl, isNew);
+    void this.startEditingAsync(
+      state,
+      annotation,
+      element,
+      pageEl,
+      isNew,
+    ).catch((error) => {
+      console.error("PDF Textbox: could not open the textbox editor", error);
+    });
   }
 
   private async startEditingAsync(
@@ -2290,19 +2298,36 @@ export default class PdfTextboxPlugin extends Plugin {
   private async ensureMarkdownLanguage(): Promise<Extension | null> {
     if (this.markdownLanguage) return this.markdownLanguage;
     if (!this.markdownLanguagePromise) {
-      this.markdownLanguagePromise = this.loadMarkdownLanguage();
+      this.markdownLanguagePromise = this.loadMarkdownLanguage().catch(
+        (error) => {
+          // Never cache a failed load: a rejected promise would make every
+          // later attempt to open a textbox fail as well.
+          console.error("PDF Textbox: could not load Markdown language", error);
+          this.markdownLanguagePromise = null;
+          return null;
+        },
+      );
     }
     return this.markdownLanguagePromise;
   }
 
   private findMarkdownLanguage(): Extension | null {
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
-      const view = leaf.view as MarkdownView;
-      const editorView = (
-        view.editor as unknown as { cm?: EditorView }
-      ).cm;
-      const languageExtension = editorView?.state.facet(language);
-      if (languageExtension) return languageExtension as Extension;
+      try {
+        // Markdown leaves can exist without a loaded editor, e.g. a note in a
+        // collapsed sidebar or a leaf that is still deferred. Reading
+        // `view.editor.cm` would throw for those and abort the whole textbox
+        // editor start, so skip them.
+        const view = leaf.view as MarkdownView | undefined;
+        const editor = view?.editor as unknown as
+          | { cm?: EditorView }
+          | undefined;
+        const editorView = editor?.cm;
+        const languageExtension = editorView?.state.facet(language);
+        if (languageExtension) return languageExtension as Extension;
+      } catch {
+        // Ignore leaves that are not ready yet.
+      }
     }
     return null;
   }
