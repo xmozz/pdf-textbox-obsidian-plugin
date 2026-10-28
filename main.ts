@@ -4131,10 +4131,6 @@ export default class PdfTextboxPlugin extends Plugin {
 
   private scheduleRenderAll(state: PdfViewState): void {
     if (this.states.get(state.leaf) !== state || this.disposed) return;
-    // Do not re-render while a textbox is being edited: zooming would destroy
-    // the editor and corrupt its geometry. The textbox is re-rendered when
-    // editing ends.
-    if (state.editing) return;
 
     const win = state.viewerContainerEl.ownerDocument.defaultView ?? window;
 
@@ -4162,7 +4158,6 @@ export default class PdfTextboxPlugin extends Plugin {
 
   private renderAll(state: PdfViewState): void {
     if (this.states.get(state.leaf) !== state || this.disposed) return;
-    if (state.editing) return;
 
     this.ensureToolbar(state);
 
