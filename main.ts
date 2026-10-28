@@ -3,8 +3,18 @@ import {
   EditorState,
   Prec,
   type Extension,
+  type Range,
 } from "@codemirror/state";
-import { EditorView, drawSelection, keymap } from "@codemirror/view";
+import {
+  Decoration,
+  EditorView,
+  ViewPlugin,
+  WidgetType,
+  drawSelection,
+  keymap,
+  type DecorationSet,
+  type ViewUpdate,
+} from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { language } from "@codemirror/language";
 import {
@@ -22,7 +32,10 @@ import {
   View,
   WorkspaceLeaf,
   editorLivePreviewField,
+  finishRenderMath,
+  loadMathJax,
   normalizePath,
+  renderMath,
   setIcon,
 } from "obsidian";
 import html2canvas from "html2canvas";
@@ -74,6 +87,8 @@ export interface PdfTextboxSettings {
   backgroundColorOpacity: number;
   /** Show the overwrite confirmation before burning into the PDF. */
   confirmBeforeBurn: boolean;
+  /** Render Markdown/LaTeX while typing instead of only after leaving the editor. */
+  livePreviewWhileEditing: boolean;
   /** Keep textbox edit mode enabled across PDF switches and restarts. */
   editModeEnabled: boolean;
 }
@@ -84,6 +99,7 @@ export const DEFAULT_SETTINGS: PdfTextboxSettings = {
   backgroundColor: "#ffd54f",
   backgroundColorOpacity: 0.58,
   confirmBeforeBurn: true,
+  livePreviewWhileEditing: true,
   editModeEnabled: false,
 };
 
@@ -384,6 +400,10 @@ function coerceSettings(raw: unknown): PdfTextboxSettings {
       typeof source.confirmBeforeBurn === "boolean"
         ? source.confirmBeforeBurn
         : DEFAULT_SETTINGS.confirmBeforeBurn,
+    livePreviewWhileEditing:
+      typeof source.livePreviewWhileEditing === "boolean"
+        ? source.livePreviewWhileEditing
+        : DEFAULT_SETTINGS.livePreviewWhileEditing,
     editModeEnabled:
       typeof source.editModeEnabled === "boolean"
         ? source.editModeEnabled
@@ -409,6 +429,114 @@ function textColorForBackground(hex: string): string {
   const blue = value & 255;
   const luminance = (0.299 * red + 0.587 * green + 0.114 * blue) / 255;
   return luminance > 0.6 ? "#1c1c1c" : "#ffffff";
+}
+
+interface RgbColor {
+  r: number;
+  g: number;
+  b: number;
+}
+
+/** Parses hex/rgb/rgba and, as a fallback, any colour the browser understands. */
+function parseColor(value: string): RgbColor | null {
+  const text = value.trim();
+  if (!text) return null;
+
+  const hex = /^#([0-9a-f]{3,8})$/i.exec(text);
+  if (hex) {
+    const digits = hex[1] ?? "";
+    const expand = (part: string): number =>
+      Number.parseInt(part.length === 1 ? part + part : part, 16);
+    if (digits.length === 3 || digits.length === 4) {
+      return {
+        r: expand(digits.charAt(0)),
+        g: expand(digits.charAt(1)),
+        b: expand(digits.charAt(2)),
+      };
+    }
+    if (digits.length === 6 || digits.length === 8) {
+      return {
+        r: Number.parseInt(digits.slice(0, 2), 16),
+        g: Number.parseInt(digits.slice(2, 4), 16),
+        b: Number.parseInt(digits.slice(4, 6), 16),
+      };
+    }
+  }
+
+  const rgb = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i.exec(text);
+  if (rgb) {
+    return { r: Number(rgb[1]), g: Number(rgb[2]), b: Number(rgb[3]) };
+  }
+
+  // Themed colours can be oklch()/lab()/named colours. Let the browser
+  // normalise those to #rrggbb instead of guessing.
+  try {
+    if (typeof document === "undefined") return null;
+    const context = document.createElement("canvas").getContext("2d");
+    if (!context) return null;
+    const sentinel = "#010203";
+    context.fillStyle = sentinel;
+    context.fillStyle = text;
+    const normalized = context.fillStyle;
+    const lower = text.toLowerCase();
+    if (
+      typeof normalized !== "string" ||
+      (normalized === sentinel && lower !== sentinel && lower !== "black")
+    ) {
+      return null;
+    }
+    // The canvas getter can also echo modern colour spaces back verbatim;
+    // only recurse for formats the regex above understands.
+    if (!/^(#|rgba?\()/i.test(normalized)) return null;
+    return parseColor(normalized);
+  } catch {
+    return null;
+  }
+}
+
+function relativeLuminance(color: RgbColor): number {
+  const channel = (value: number): number => {
+    const normalized = value / 255;
+    return normalized <= 0.03928
+      ? normalized / 12.92
+      : Math.pow((normalized + 0.055) / 1.055, 2.4);
+  };
+  return (
+    0.2126 * channel(color.r) +
+    0.7152 * channel(color.g) +
+    0.0722 * channel(color.b)
+  );
+}
+
+function contrastRatio(first: RgbColor, second: RgbColor): number {
+  const a = relativeLuminance(first);
+  const b = relativeLuminance(second);
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
+/**
+ * Keeps a theme colour when it is readable on the textbox background and
+ * falls back to the high-contrast black/white text colour otherwise.
+ */
+function readableColor(
+  candidate: string,
+  background: string,
+  fallback: string,
+  minRatio: number,
+): string {
+  const candidateRgb = parseColor(candidate);
+  const backgroundRgb = parseColor(background);
+  if (!candidateRgb || !backgroundRgb) return fallback;
+  return contrastRatio(candidateRgb, backgroundRgb) >= minRatio
+    ? candidate
+    : fallback;
+}
+
+interface ThemeMarkdownColors {
+  strong: string;
+  em: string;
+  /** Computed colour for h1 … h6. */
+  headings: string[];
 }
 
 function escapeSelectorValue(value: string): string {
@@ -516,6 +644,354 @@ function resolvePdfHost(view: PdfView): ResolvedPdfHost | null {
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Live Markdown formatting while editing                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Obsidian's Live Preview decorations are installed only on Markdown views, so
+ * a custom CodeMirror editor shows raw Markdown. These decorations provide the
+ * essential part of that experience inside a textbox: formatting is applied
+ * while typing, markers are hidden, and inline LaTeX is rendered with MathJax.
+ * Markers reappear for the construct that contains the caret, so the source
+ * stays editable.
+ */
+
+const LIVE_CODE_PATTERN = /`([^`\n]+)`/g;
+const LIVE_BLOCK_MATH_PATTERN = /^[ \t]*\$\$([\s\S]+?)\$\$[ \t]*$/gm;
+const LIVE_DISPLAY_MATH_PATTERN = /\$\$([^$\n]+)\$\$/g;
+const LIVE_INLINE_MATH_PATTERN =
+  /(?<!\\)\$(?!\s)([^$\n]*?[^\s$])\$(?!\d)/g;
+const LIVE_LINK_PATTERN = /(!?)\[([^\]\n]+)\]\(([^)\n]+)\)/g;
+const LIVE_HEADING_PATTERN = /^(#{1,6})[ \t]+/gm;
+const LIVE_FENCE_PATTERN = /^[ \t]{0,3}(`{3,}|~{3,})/;
+
+const LIVE_INLINE_RULES: Array<{
+  pattern: RegExp;
+  className: string;
+  /** Number of marker characters to hide before and after the content. */
+  markers: [number, number];
+}> = [
+  {
+    pattern: /\*\*\*(?![\s*])([^*\n]*?[^\s*])\*\*\*/g,
+    className: "pdf-textbox-live-strong pdf-textbox-live-em",
+    markers: [3, 3],
+  },
+  {
+    pattern: /(?<![\w])___(?![\s_])([^_\n]*?[^\s_])___(?![\w])/g,
+    className: "pdf-textbox-live-strong pdf-textbox-live-em",
+    markers: [3, 3],
+  },
+  {
+    pattern: /\*\*(?![\s*])([^*\n]*?[^\s*])\*\*/g,
+    className: "pdf-textbox-live-strong",
+    markers: [2, 2],
+  },
+  {
+    pattern: /(?<![\w])__(?![\s_])([^_\n]*?[^\s_])__(?![\w])/g,
+    className: "pdf-textbox-live-strong",
+    markers: [2, 2],
+  },
+  {
+    pattern: /~~(?![\s~])([^~\n]*?[^\s~])~~/g,
+    className: "pdf-textbox-live-strike",
+    markers: [2, 2],
+  },
+  {
+    pattern: /==(?![\s=])([^=\n]*?[^\s=])==/g,
+    className: "pdf-textbox-live-highlight",
+    markers: [2, 2],
+  },
+  {
+    pattern: /\*(?![\s*])([^*\n]*?[^\s*])\*/g,
+    className: "pdf-textbox-live-em",
+    markers: [1, 1],
+  },
+  {
+    pattern: /(?<![\w])_(?![\s_])([^_\n]*?[^\s_])_(?![\w])/g,
+    className: "pdf-textbox-live-em",
+    markers: [1, 1],
+  },
+];
+
+class TextboxMathWidget extends WidgetType {
+  constructor(
+    private readonly source: string,
+    private readonly displayMode: boolean,
+    private readonly isBlock = false,
+  ) {
+    super();
+  }
+
+  eq(other: TextboxMathWidget): boolean {
+    return (
+      other.source === this.source &&
+      other.displayMode === this.displayMode &&
+      other.isBlock === this.isBlock
+    );
+  }
+
+  toDOM(view: EditorView): HTMLElement {
+    try {
+      const element = renderMath(this.source, this.displayMode);
+      element.classList.add("pdf-textbox-live-math");
+      if (this.isBlock) element.classList.add("is-block");
+      void finishRenderMath().catch(() => undefined);
+      return element;
+    } catch (error) {
+      // Invalid LaTeX must not break the editor; fall back to the source.
+      console.error("PDF Textbox: LaTeX could not be rendered", error);
+      const fallback = view.dom.ownerDocument.createElement("span");
+      fallback.className = "pdf-textbox-live-math";
+      fallback.textContent = this.source;
+      return fallback;
+    }
+  }
+
+  ignoreEvent(): boolean {
+    return false;
+  }
+}
+
+/** Ranges of fenced code blocks, whose content stays raw. */
+function findFencedCodeRanges(text: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  let fenceStart = -1;
+  let offset = 0;
+
+  for (const line of text.split("\n")) {
+    if (LIVE_FENCE_PATTERN.test(line)) {
+      if (fenceStart < 0) {
+        fenceStart = offset;
+      } else {
+        ranges.push([fenceStart, offset + line.length]);
+        fenceStart = -1;
+      }
+    }
+    offset += line.length + 1;
+  }
+
+  if (fenceStart >= 0) ranges.push([fenceStart, text.length]);
+  return ranges;
+}
+
+export function buildLiveFormattingDecorations(
+  view: EditorView,
+): DecorationSet {
+  const text = view.state.doc.toString();
+  if (text.length === 0) return Decoration.none;
+  // Keep editing responsive even for unusually large boxes: the decoration
+  // scan is quadratic in the number of matches because overlaps are resolved
+  // against the already accepted ranges.
+  if (text.length > 20000) return Decoration.none;
+
+  const ranges: Range<Decoration>[] = [];
+  const occupied: Array<[number, number]> = [];
+  const opaque = findFencedCodeRanges(text);
+  const selection = view.state.selection.ranges;
+
+  const isRevealed = (from: number, to: number): boolean =>
+    selection.some((range) => range.from < to && range.to > from);
+
+  const isOccupied = (from: number, to: number): boolean =>
+    occupied.some(([start, end]) => from < end && to > start);
+
+  const isOpaque = (from: number, to: number): boolean =>
+    opaque.some(([start, end]) => from >= start && to <= end);
+
+  const addMark = (
+    from: number,
+    to: number,
+    className: string,
+    markers: Array<[number, number]>,
+    opaqueContent = false,
+  ): void => {
+    if (isOpaque(from, to)) return;
+    const revealed = isRevealed(from, to);
+    // Markers are only hidden when the caret is outside the construct, so the
+    // source stays editable without losing the formatting itself.
+    if (!revealed && markers.some(([start, end]) => isOccupied(start, end))) {
+      return;
+    }
+
+    ranges.push(Decoration.mark({ class: className }).range(from, to));
+    if (revealed) return;
+
+    for (const [start, end] of markers) {
+      if (end <= start) continue;
+      ranges.push(Decoration.replace({}).range(start, end));
+      occupied.push([start, end]);
+    }
+    if (opaqueContent) opaque.push([from, to]);
+  };
+
+  const addMath = (
+    from: number,
+    to: number,
+    source: string,
+    display: boolean,
+  ): void => {
+    if (source.trim().length === 0) return;
+    if (isRevealed(from, to) || isOpaque(from, to) || isOccupied(from, to)) {
+      return;
+    }
+
+    ranges.push(
+      Decoration.replace({
+        widget: new TextboxMathWidget(source, display),
+      }).range(from, to),
+    );
+    occupied.push([from, to]);
+  };
+
+  // Multi-line display math is replaced as a block: CodeMirror only allows
+  // block replacements that cover complete lines.
+  for (const match of text.matchAll(LIVE_BLOCK_MATH_PATTERN)) {
+    if (!match[0].includes("\n")) continue;
+    const from = match.index ?? 0;
+    const source = match[1] ?? "";
+    if (source.trim().length === 0) continue;
+
+    const blockFrom = view.state.doc.lineAt(from).from;
+    const blockTo = view.state.doc.lineAt(
+      from + Math.max(0, match[0].length - 1),
+    ).to;
+    if (
+      isRevealed(blockFrom, blockTo) ||
+      isOpaque(blockFrom, blockTo) ||
+      isOccupied(blockFrom, blockTo)
+    ) {
+      continue;
+    }
+
+    ranges.push(
+      Decoration.replace({
+        widget: new TextboxMathWidget(source, true, true),
+        block: true,
+      }).range(blockFrom, blockTo),
+    );
+    occupied.push([blockFrom, blockTo]);
+  }
+
+  // Inline code first: nothing inside it may be formatted.
+  for (const match of text.matchAll(LIVE_CODE_PATTERN)) {
+    const from = match.index ?? 0;
+    const to = from + match[0].length;
+    addMark(
+      from,
+      to,
+      "pdf-textbox-live-code",
+      [
+        [from, from + 1],
+        [to - 1, to],
+      ],
+      true,
+    );
+  }
+
+  for (const match of text.matchAll(LIVE_DISPLAY_MATH_PATTERN)) {
+    const from = match.index ?? 0;
+    addMath(from, from + match[0].length, match[1] ?? "", true);
+  }
+
+  for (const match of text.matchAll(LIVE_INLINE_MATH_PATTERN)) {
+    const from = match.index ?? 0;
+    addMath(from, from + match[0].length, match[1] ?? "", false);
+  }
+
+  for (const rule of LIVE_INLINE_RULES) {
+    for (const match of text.matchAll(rule.pattern)) {
+      const from = match.index ?? 0;
+      const to = from + match[0].length;
+      const [leading, trailing] = rule.markers;
+      addMark(from, to, rule.className, [
+        [from, from + leading],
+        [to - trailing, to],
+      ]);
+    }
+  }
+
+  for (const match of text.matchAll(LIVE_LINK_PATTERN)) {
+    const from = match.index ?? 0;
+    const to = from + match[0].length;
+    const contentFrom = from + (match[1]?.length ?? 0) + 1;
+    const contentTo = contentFrom + (match[2]?.length ?? 0);
+    addMark(from, to, "pdf-textbox-live-link", [
+      [from, contentFrom],
+      [contentTo, to],
+    ]);
+  }
+
+  for (const match of text.matchAll(LIVE_HEADING_PATTERN)) {
+    const from = match.index ?? 0;
+    const markerEnd = from + match[0].length;
+    const line = view.state.doc.lineAt(from);
+    if (isOpaque(from, markerEnd) || isOccupied(from, markerEnd)) continue;
+
+    // Heading styling always applies; only the hashes are hidden while the
+    // caret is elsewhere.
+    ranges.push(
+      Decoration.line({
+        class: `pdf-textbox-live-h${match[1]?.length ?? 1}`,
+      }).range(line.from),
+    );
+    if (isRevealed(line.from, line.to)) continue;
+
+    ranges.push(Decoration.replace({}).range(from, markerEnd));
+    occupied.push([from, markerEnd]);
+  }
+
+  return Decoration.set(ranges, true);
+}
+
+const liveFormattingExtension: Extension = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+
+    constructor(view: EditorView) {
+      this.decorations = buildLiveFormattingDecorations(view);
+    }
+
+    update(update: ViewUpdate): void {
+      if (update.docChanged || update.selectionSet) {
+        this.decorations = buildLiveFormattingDecorations(update.view);
+      }
+    }
+  },
+  {
+    decorations: (plugin) => plugin.decorations,
+  },
+);
+
+/** Characters that wrap a selection instead of replacing it when typed. */
+const SELECTION_WRAPPING_CHARACTERS = new Set(["*", "_", "`", "$", "=", "~"]);
+
+const wrapSelectionExtension: Extension = EditorView.inputHandler.of(
+  (view, from, to, text) => {
+    if (from === to || text.length !== 1) return false;
+    if (!SELECTION_WRAPPING_CHARACTERS.has(text)) return false;
+
+    view.dispatch(
+      view.state.changeByRange((range) => {
+        if (range.empty) {
+          return {
+            changes: { from: range.from, insert: text },
+            range: EditorSelection.cursor(range.from + 1),
+          };
+        }
+        return {
+          changes: [
+            { from: range.from, insert: text },
+            { from: range.to, insert: text },
+          ],
+          range: EditorSelection.range(range.from + 1, range.to + 1),
+        };
+      }),
+    );
+    return true;
+  },
+);
+
+/* -------------------------------------------------------------------------- */
 /*  Small confirmation modal                                                   */
 /* -------------------------------------------------------------------------- */
 
@@ -620,9 +1096,18 @@ export default class PdfTextboxPlugin extends Plugin {
   private markdownLanguage: Extension | null = null;
   private markdownLanguagePromise: Promise<Extension | null> | null = null;
   private editorRequestId = 0;
+  /** Cached theme colours per document; cleared when the theme changes. */
+  private themeColors = new WeakMap<Document, ThemeMarkdownColors>();
 
   async onload(): Promise<void> {
     await this.loadStore();
+
+    this.registerEvent(
+      this.app.workspace.on("css-change", () => {
+        this.themeColors = new WeakMap();
+        for (const state of this.states.values()) this.renderAll(state);
+      }),
+    );
 
     this.addCommand({
       id: "toggle-textbox-edit-mode",
@@ -1718,6 +2203,20 @@ export default class PdfTextboxPlugin extends Plugin {
     body.className = "pdf-textbox-body markdown-rendered";
     element.appendChild(body);
 
+    // Links are clickable whenever the rendered body is visible, even while
+    // edit mode is on. stopImmediatePropagation keeps the edit-mode click
+    // handler from opening the editor at the same time. The rest of the
+    // textbox stays click-through (see CSS).
+    element.addEventListener("click", (event) => {
+      const target = event.target as Element | null;
+      if (!target || typeof target.closest !== "function") return;
+      const anchor = target.closest("a");
+      if (!anchor) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      this.openTextboxLink(anchor as HTMLAnchorElement, state);
+    });
+
     const grip = ownerDocument.createElement("div");
     grip.className = "pdf-textbox-grip";
     grip.setAttribute("aria-hidden", "true");
@@ -2148,6 +2647,13 @@ export default class PdfTextboxPlugin extends Plugin {
       ),
       keymap.of([...defaultKeymap, ...historyKeymap]),
     );
+
+    if (this.data.settings.livePreviewWhileEditing) {
+      extensions.push(liveFormattingExtension);
+      // Inline LaTeX needs MathJax; loading it is idempotent and lazy.
+      void loadMathJax().catch(() => undefined);
+    }
+    extensions.push(wrapSelectionExtension);
 
     const editorView = new EditorView({
       state: EditorState.create({
@@ -2628,6 +3134,13 @@ export default class PdfTextboxPlugin extends Plugin {
             top = Math.max(0, baseHeight - height);
           }
 
+          const linkTargets = this.collectBurnLinkTargets(
+            burn.element,
+            filePath,
+            width,
+            height,
+          );
+
           const canvas = await html2canvas(burn.element, {
             backgroundColor: null,
             scale: 3,
@@ -2684,6 +3197,33 @@ export default class PdfTextboxPlugin extends Plugin {
             page.node.set(PDFName.of("Annots"), pageAnnotations);
           }
           pageAnnotations.push(annotationRef);
+
+          // Make links clickable in the burned PDF by adding invisible PDF
+          // Link annotations over the rendered link text.
+          for (const target of linkTargets) {
+            const linkRect = this.annotationRectForRotation(
+              rotation,
+              pageWidth,
+              pageHeight,
+              left + target.x,
+              top + target.y,
+              target.width,
+              target.height,
+            );
+            const linkDict = pdf.context.obj({
+              Type: "Annot",
+              Subtype: "Link",
+              Rect: [linkRect.x0, linkRect.y0, linkRect.x1, linkRect.y1],
+              Border: [0, 0, 0],
+              F: 4,
+              A: {
+                Type: "Action",
+                S: "URI",
+                URI: PDFString.of(target.href),
+              },
+            });
+            pageAnnotations.push(pdf.context.register(linkDict));
+          }
 
           burnedCount += 1;
           burnedIds.add(annotation.id);
@@ -2771,6 +3311,7 @@ export default class PdfTextboxPlugin extends Plugin {
       this.data.settings.backgroundColorOpacity,
     );
     element.style.color = textColorForBackground(color);
+    this.applyThemeTextColors(element, color);
 
     const body = document.createElement("div");
     body.className = "pdf-textbox-body markdown-rendered";
@@ -3073,6 +3614,75 @@ export default class PdfTextboxPlugin extends Plugin {
     return { x0, y0, x1, y1, width: x1 - x0, height: y1 - y0 };
   }
 
+  /** Link rectangles inside a burn element, in PDF points relative to the box. */
+  private collectBurnLinkTargets(
+    element: HTMLElement,
+    sourcePath: string,
+    width: number,
+    height: number,
+  ): Array<{ href: string; x: number; y: number; width: number; height: number }> {
+    const targets: Array<{
+      href: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }> = [];
+    const base = element.getBoundingClientRect();
+    if (base.width <= 0 || base.height <= 0) return targets;
+
+    const scaleX = width / base.width;
+    const scaleY = height / base.height;
+
+    for (const anchor of Array.from(element.querySelectorAll("a"))) {
+      const href = this.resolveBurnLinkHref(anchor, sourcePath);
+      if (!href) continue;
+      const rect = anchor.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      targets.push({
+        href,
+        x: (rect.left - base.left) * scaleX,
+        y: (rect.top - base.top) * scaleY,
+        width: rect.width * scaleX,
+        height: rect.height * scaleY,
+      });
+    }
+
+    return targets;
+  }
+
+  /** Resolves an anchor to a URI that can be stored in a PDF Link annotation. */
+  private resolveBurnLinkHref(
+    anchor: HTMLAnchorElement,
+    sourcePath: string,
+  ): string | null {
+    const href = (anchor.getAttribute("href") ?? "").trim();
+    const dataHref = (anchor.getAttribute("data-href") ?? "").trim();
+    const isInternal =
+      dataHref.length > 0 || anchor.classList.contains("internal-link");
+
+    if (!isInternal) {
+      return /^(https?:|mailto:|obsidian:)/i.test(href) ? href : null;
+    }
+
+    const raw = dataHref || href;
+    if (!raw) return null;
+
+    const hashIndex = raw.indexOf("#");
+    const linkPath = (hashIndex >= 0 ? raw.slice(0, hashIndex) : raw).trim();
+    const subpath = hashIndex >= 0 ? raw.slice(hashIndex + 1) : "";
+    const file = linkPath
+      ? this.app.metadataCache.getFirstLinkpathDest(linkPath, sourcePath)
+      : null;
+    const targetPath = file?.path ?? linkPath;
+    if (!targetPath) return null;
+
+    const vault = encodeURIComponent(this.app.vault.getName());
+    const fileParam = encodeURIComponent(targetPath);
+    const anchorParam = subpath ? `#${encodeURIComponent(subpath)}` : "";
+    return `obsidian://open?vault=${vault}&file=${fileParam}${anchorParam}`;
+  }
+
   /* ------------------------------- rendering ------------------------------ */
 
   private scheduleRenderAll(state: PdfViewState): void {
@@ -3227,6 +3837,7 @@ export default class PdfTextboxPlugin extends Plugin {
     const textColor = textColorForBackground(annotation.color);
     element.style.backgroundColor = background;
     element.style.color = textColor;
+    this.applyThemeTextColors(element, annotation.color);
 
     const collapsedIcon = element.querySelector<HTMLElement>(
       ".pdf-textbox-collapsed-icon",
@@ -3238,6 +3849,114 @@ export default class PdfTextboxPlugin extends Plugin {
       );
       collapsedIcon.style.color = textColor;
     }
+  }
+
+  /**
+   * Reads the active theme's colours for bold, italic and headings from a
+   * hidden probe element and exposes them as CSS variables for this textbox.
+   * Colours that would not be readable on the textbox background are replaced
+   * with the high-contrast black/white text colour.
+   */
+  private applyThemeTextColors(
+    element: HTMLElement,
+    backgroundHex: string,
+  ): void {
+    const fallback = textColorForBackground(backgroundHex);
+    const theme = this.getThemeMarkdownColors(element.ownerDocument);
+    const apply = (
+      property: string,
+      candidate: string,
+      minRatio: number,
+    ): void => {
+      element.style.setProperty(
+        property,
+        readableColor(candidate, backgroundHex, fallback, minRatio),
+      );
+    };
+
+    apply("--pdf-textbox-strong-color", theme.strong, 4.5);
+    apply("--pdf-textbox-em-color", theme.em, 4.5);
+    theme.headings.forEach((color, index) => {
+      apply(`--pdf-textbox-h${index + 1}-color`, color, 3);
+    });
+  }
+
+  private getThemeMarkdownColors(doc: Document): ThemeMarkdownColors {
+    const cached = this.themeColors.get(doc);
+    if (cached) return cached;
+
+    const colors: ThemeMarkdownColors = { strong: "", em: "", headings: [] };
+    let probe: HTMLElement | null = null;
+
+    try {
+      const body = doc.body;
+      if (body) {
+        const win = doc.defaultView ?? window;
+        probe = doc.createElement("div");
+        // Mirror the classes Obsidian uses for rendered Markdown so theme
+        // rules targeting the reading view apply to the probe as well.
+        probe.className = "markdown-preview-view markdown-rendered";
+        probe.setAttribute("aria-hidden", "true");
+        probe.style.cssText =
+          "position:absolute;left:-10000px;top:0;width:320px;visibility:hidden;pointer-events:none;";
+
+        const strongEl = doc.createElement("strong");
+        strongEl.textContent = "x";
+        const emEl = doc.createElement("em");
+        emEl.textContent = "x";
+        const paragraph = doc.createElement("p");
+        paragraph.append(strongEl, doc.createTextNode(" "), emEl);
+
+        const content = doc.createElement("div");
+        content.className = "markdown-preview-sizer markdown-preview-section";
+        content.appendChild(paragraph);
+
+        const headingEls: HTMLElement[] = [];
+        for (let level = 1; level <= 6; level += 1) {
+          const heading = doc.createElement(`h${level}`);
+          heading.textContent = "x";
+          content.appendChild(heading);
+          headingEls.push(heading);
+        }
+        probe.appendChild(content);
+
+        body.appendChild(probe);
+        colors.strong = win.getComputedStyle(strongEl).color || "";
+        colors.em = win.getComputedStyle(emEl).color || "";
+        colors.headings = headingEls.map(
+          (heading) => win.getComputedStyle(heading).color || "",
+        );
+      }
+    } catch {
+      // Fall back to the inherited text colour when the probe cannot run.
+    } finally {
+      probe?.remove();
+    }
+
+    this.themeColors.set(doc, colors);
+    return colors;
+  }
+
+  private openTextboxLink(
+    anchor: HTMLAnchorElement,
+    state: PdfViewState,
+  ): void {
+    const href = (anchor.getAttribute("href") ?? "").trim();
+    const dataHref = (anchor.getAttribute("data-href") ?? "").trim();
+
+    if (/^obsidian:/i.test(href)) {
+      window.open(href, "_blank");
+      return;
+    }
+
+    if (/^(https?:|mailto:)/i.test(href)) {
+      window.open(href, "_blank");
+      return;
+    }
+
+    const linkText = dataHref || href;
+    if (!linkText) return;
+    void this.app.workspace.openLinkText(linkText, state.filePath, false);
   }
 
   private applyCollapsedState(
@@ -3690,6 +4409,21 @@ class PdfTextboxSettingTab extends PluginSettingTab {
           .setDynamicTooltip()
           .onChange((value) =>
             this.plugin.setSettings({ backgroundColorOpacity: value / 100 }),
+          ),
+      );
+
+    new Setting(containerEl).setName("Editing").setHeading();
+
+    new Setting(containerEl)
+      .setName("Live formatting while editing")
+      .setDesc(
+        "Apply Markdown formatting and render LaTeX inside the textbox while you type. Markers become visible again while the cursor is inside them.",
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(settings.livePreviewWhileEditing)
+          .onChange((value) =>
+            this.plugin.setSettings({ livePreviewWhileEditing: value }),
           ),
       );
 

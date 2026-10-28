@@ -191,6 +191,42 @@
 
 .pdf-textbox-body.markdown-rendered a {
   text-decoration: underline;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+/* Theme colours are computed in main.ts and respect contrast against the
+   textbox background. Declared after the inherit rule above on purpose. */
+.pdf-textbox-annotation .pdf-textbox-body.markdown-rendered strong {
+  color: var(--pdf-textbox-strong-color, inherit);
+}
+
+.pdf-textbox-annotation .pdf-textbox-body.markdown-rendered em {
+  color: var(--pdf-textbox-em-color, inherit);
+}
+
+.pdf-textbox-annotation .pdf-textbox-body.markdown-rendered h1 {
+  color: var(--pdf-textbox-h1-color, inherit);
+}
+
+.pdf-textbox-annotation .pdf-textbox-body.markdown-rendered h2 {
+  color: var(--pdf-textbox-h2-color, inherit);
+}
+
+.pdf-textbox-annotation .pdf-textbox-body.markdown-rendered h3 {
+  color: var(--pdf-textbox-h3-color, inherit);
+}
+
+.pdf-textbox-annotation .pdf-textbox-body.markdown-rendered h4 {
+  color: var(--pdf-textbox-h4-color, inherit);
+}
+
+.pdf-textbox-annotation .pdf-textbox-body.markdown-rendered h5 {
+  color: var(--pdf-textbox-h5-color, inherit);
+}
+
+.pdf-textbox-annotation .pdf-textbox-body.markdown-rendered h6 {
+  color: var(--pdf-textbox-h6-color, inherit);
 }
 
 .pdf-textbox-body.markdown-rendered blockquote {
@@ -350,6 +386,92 @@
 .pdf-textbox-annotation .pdf-textbox-editor .cm-content {
   white-space: pre-wrap;
   caret-color: currentColor;
+}
+
+/* Live Markdown formatting while the textbox editor is open. The DOM classes
+   are added by the decoration plugin in main.ts. */
+.pdf-textbox-annotation .pdf-textbox-live-strong {
+  font-weight: 700;
+  color: var(--pdf-textbox-strong-color, inherit);
+}
+
+.pdf-textbox-annotation .pdf-textbox-live-em {
+  font-style: italic;
+  color: var(--pdf-textbox-em-color, inherit);
+}
+
+.pdf-textbox-annotation .pdf-textbox-live-strike {
+  text-decoration: line-through;
+}
+
+.pdf-textbox-annotation .pdf-textbox-live-highlight {
+  background-color: rgba(255, 213, 79, 0.45);
+  border-radius: 2px;
+  color: inherit;
+}
+
+.pdf-textbox-annotation .pdf-textbox-live-code {
+  padding: 0 0.15em;
+  border-radius: 2px;
+  background-color: rgba(127, 127, 127, 0.16);
+  font-family: var(--font-monospace);
+  font-size: 0.92em;
+}
+
+.pdf-textbox-annotation .pdf-textbox-live-link {
+  color: inherit;
+  text-decoration: underline;
+}
+
+.pdf-textbox-annotation .pdf-textbox-live-h1,
+.pdf-textbox-annotation .pdf-textbox-live-h2,
+.pdf-textbox-annotation .pdf-textbox-live-h3,
+.pdf-textbox-annotation .pdf-textbox-live-h4,
+.pdf-textbox-annotation .pdf-textbox-live-h5,
+.pdf-textbox-annotation .pdf-textbox-live-h6 {
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.pdf-textbox-annotation .pdf-textbox-live-h1 {
+  font-size: 1.45em;
+  color: var(--pdf-textbox-h1-color, inherit);
+}
+
+.pdf-textbox-annotation .pdf-textbox-live-h2 {
+  font-size: 1.3em;
+  color: var(--pdf-textbox-h2-color, inherit);
+}
+
+.pdf-textbox-annotation .pdf-textbox-live-h3 {
+  font-size: 1.18em;
+  color: var(--pdf-textbox-h3-color, inherit);
+}
+
+.pdf-textbox-annotation .pdf-textbox-live-h4,
+.pdf-textbox-annotation .pdf-textbox-live-h5,
+.pdf-textbox-annotation .pdf-textbox-live-h6 {
+  font-size: 1.05em;
+}
+
+.pdf-textbox-annotation .pdf-textbox-live-h4 {
+  color: var(--pdf-textbox-h4-color, inherit);
+}
+
+.pdf-textbox-annotation .pdf-textbox-live-h5 {
+  color: var(--pdf-textbox-h5-color, inherit);
+}
+
+.pdf-textbox-annotation .pdf-textbox-live-h6 {
+  color: var(--pdf-textbox-h6-color, inherit);
+}
+
+.pdf-textbox-annotation .pdf-textbox-live-math {
+  color: inherit;
+}
+
+.pdf-textbox-annotation .pdf-textbox-live-math mjx-container {
+  margin: 0 !important;
 }
 
 /* -------------------------------------------------------------------------- */

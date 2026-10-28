@@ -11,6 +11,10 @@ An Obsidian plugin that adds editable Markdown/LaTeX textboxes to Obsidian's nat
 - **Immediate editing**: The new textbox is focused right away. In edit mode, clicking an existing textbox opens its editor again.
 - **Markdown & LaTeX**: Content is rendered through Obsidian's `MarkdownRenderer`. Headings, bold/italic text, lists, tables, quotes, callouts, code blocks, images, and formulas such as `$e^{i\pi}+1=0$` work like they do in a note.
 - **Obsidian editor experience**: Textboxes use CodeMirror 6. If the **LaTeX Suite** plugin is installed and enabled, its snippets, autofractions, and other editor features work inside the textbox editor. Common Obsidian formatting hotkeys are supported: `Ctrl/Cmd+B` (bold), `Ctrl/Cmd+I` (italic), `Ctrl/Cmd+E` (inline code), `Ctrl/Cmd+Shift+X` (strikethrough), `Ctrl/Cmd+Shift+H` (highlight), and `Ctrl/Cmd+K` (link).
+- **Live formatting while typing**: Markdown formatting is applied and LaTeX is rendered directly inside the editor as you type instead of only after leaving the textbox. Markdown markers reappear while the cursor is inside the formatted text, so the source stays editable. Can be turned off in the settings.
+- **Wrap a selection**: With text selected, typing `*`, `_`, `` ` ``, `$`, `=` or `~` wraps the selection instead of replacing it. Typing the character twice gives bold, display math or a highlight.
+- **Clickable links**: Links in a textbox open in the browser or resolve inside the vault. When burning, invisible PDF Link annotations are added on top of the rendered link text, so links also work in the burned PDF.
+- **Theme-aware text colours**: Bold, italic and headings use the colours of the active Obsidian theme. If a theme colour would be hard to read on the textbox background, the plugin falls back to a high-contrast black or white.
 - **Readable cursor**: The editor cursor follows the text contrast color and is rendered thicker, so it remains visible on light and dark backgrounds.
 - **Collapsible textboxes**: In edit mode, the minus button collapses a textbox to a small T icon. Hovering the icon temporarily expands the content; clicking the icon expands it permanently. The collapsed state is saved.
 - **Per-textbox styling**: Right-click a textbox in edit mode to change its background color, adjust its text size, or burn only that textbox into the PDF.
@@ -75,6 +79,7 @@ Under **Settings → PDF Textbox**:
 - **Font size**: Font size of new textboxes in PDF points (also available from the toolbar dropdown).
 - **Background color**: Default color for new textboxes. Individual textboxes can be changed via right-click in edit mode.
 - **Opacity**: Transparency of the background color.
+- **Live formatting while editing**: Render Markdown formatting and LaTeX inside the textbox while typing. Disable it to always see the raw Markdown source.
 - **Confirm before burning**: Warn before overwriting the PDF. The warning dialog also offers **Don't show again**.
 
 Existing textboxes can be individually adjusted in edit mode for width, height, color, and text size.
@@ -105,6 +110,7 @@ The plugin stores its data in `data.json`:
     "backgroundColor": "#ffd54f",
     "backgroundColorOpacity": 0.58,
     "confirmBeforeBurn": true,
+    "livePreviewWhileEditing": true,
     "editModeEnabled": true
   },
   "annotations": [
@@ -138,6 +144,7 @@ The plugin stores its data in `data.json`:
 - `color` is the background color of that textbox.
 - `collapsed` stores whether the textbox is minimized to its hoverable icon.
 - `editModeEnabled` remembers whether edit mode should be on after reload or PDF switches.
+- `livePreviewWhileEditing` controls whether formatting is applied while typing.
 - File paths are updated automatically when a PDF is renamed or moved; deleting a PDF removes its textboxes.
 
 ## Technical notes
@@ -149,7 +156,7 @@ Obsidian does not expose a public API for its PDF viewer. The plugin accesses in
 - `.pdf-toolbar-right` as the anchor for the toolbar controls
 - events `pagesinit`, `pagerendered`, `scalechanging`, `rotationchanging`, and `resize`
 
-Markdown is rendered with `MarkdownRenderer.render()` and a view-scoped `Component`. The inline editor is a CodeMirror 6 `EditorView` using Obsidian's Markdown language facet and `editorLivePreviewField`; when the **LaTeX Suite** plugin is enabled, its registered editor extensions are added to the editor state. For burning, textboxes are rendered off-screen with the same CSS classes and captured as PNGs with `html2canvas`. `pdf-lib` creates a Form XObject appearance stream for each image and adds a `/Stamp` annotation to the page's `/Annots` array. The file is then overwritten via `vault.modifyBinary` and the burned entries are removed from `data.json`. The delete action in the annotation popup resolves the PDF.js annotation ID back to the PDF object and removes that annotation from `/Annots`.
+Markdown is rendered with `MarkdownRenderer.render()` and a view-scoped `Component`. The inline editor is a CodeMirror 6 `EditorView` using Obsidian's Markdown language facet and `editorLivePreviewField`; when the **LaTeX Suite** plugin is enabled, its registered editor extensions are added to the editor state. Because Obsidian's Live Preview decorations are only installed on Markdown views, the plugin adds its own decoration plugin for live formatting: it styles bold/italic/strikethrough/highlight/inline code, links, headings, and renders inline LaTeX with `renderMath`, while hiding the Markdown markers unless the cursor is inside the construct. Theme colours for bold, italic and headings are read from a hidden probe element that uses Obsidian's rendered-Markdown classes, so theme CSS applies unchanged. For burning, textboxes are rendered off-screen with the same CSS classes and captured as PNGs with `html2canvas`. `pdf-lib` creates a Form XObject appearance stream for each image and adds a `/Stamp` annotation to the page's `/Annots` array, plus one invisible `/Link` annotation per rendered link. The file is then overwritten via `vault.modifyBinary` and the burned entries are removed from `data.json`. The delete action in the annotation popup resolves the PDF.js annotation ID back to the PDF object and removes that annotation from `/Annots`.
 
 Coordinates are measured with `getBoundingClientRect()` on `.canvasWrapper`. That rectangle is already viewport-relative, so the PDF container's scroll offset is included; scale is derived from `viewport.width / pageView.scale` or `rect.width / baseWidth`.
 
@@ -179,8 +186,10 @@ The release version must match in `package.json`, `manifest.json`, and `versions
 ## Limitations
 
 - Textboxes only (no freehand drawing, highlights, or shapes).
-- Interactive Markdown elements such as checkboxes and links are visible but not clickable in the PDF view, because overlays pass clicks through outside edit mode.
+- Interactive Markdown elements such as checkboxes are visible but not clickable in the PDF view, because overlays pass clicks through outside edit mode. Links are the exception and are clickable.
 - LaTeX Suite integration requires the LaTeX Suite plugin to be installed and enabled. Other third-party editor extensions are not automatically included in the textbox editor.
+- Live formatting while editing covers inline constructs (bold, italic, strikethrough, highlight, inline code, links, headings, and LaTeX). Block-level elements such as tables, callouts, and embedded images are shown in their rendered form after you leave the editor.
+- Link annotations are only written when burning. PDFs that were burned with an older version of the plugin do not contain link targets and cannot be made clickable retroactively; re-add the textbox and burn it again.
 - Burning stores textboxes as PDF Stamp annotations with image appearances; their text is not selectable, and the original PDF is overwritten.
 - Burned annotations can be removed later with a PDF annotation editor or directly in Obsidian via the trash button / **Delete** / **Backspace** when the annotation is focused. They are no longer managed by the textbox editor after burning.
 - Data lives per vault in `data.json`; it is only written into a PDF through the burn command.
