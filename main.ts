@@ -15,7 +15,13 @@ import {
   type DecorationSet,
   type ViewUpdate,
 } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import {
+  defaultKeymap,
+  history,
+  historyKeymap,
+  indentLess,
+  indentMore,
+} from "@codemirror/commands";
 import { language } from "@codemirror/language";
 import {
   App,
@@ -1545,6 +1551,24 @@ export default class PdfTextboxPlugin extends Plugin {
         this.commitEditing(state, true);
         return;
       }
+      if (
+        event.key === "Tab" &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey
+      ) {
+        // Obsidian's default Tab handling moves focus out of the PDF viewer
+        // before CodeMirror can see the key. Indent in-place instead.
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (event.shiftKey) {
+          indentLess(session.editorView);
+        } else {
+          indentMore(session.editorView);
+        }
+        session.editorView.focus();
+        return;
+      }
       if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
       if (key === "enter") {
         event.preventDefault();
@@ -2413,55 +2437,92 @@ export default class PdfTextboxPlugin extends Plugin {
   ): void {
     if (!state.editMode || state.editing) return;
 
-    const pageEl = this.findPageElement(state, annotation.page);
-    if (!pageEl) return;
+    const initialPageEl = this.findPageElement(state, annotation.page);
+    if (!initialPageEl) return;
 
-    const metrics = this.getPageMetrics(state, pageEl);
-    const pageRect = this.getPageContentRect(pageEl);
-    if (!metrics || pageRect.width <= 0 || pageRect.height <= 0) return;
+    const initialMetrics = this.getPageMetrics(state, initialPageEl);
+    const initialPageRect = this.getPageContentRect(initialPageEl);
+    const initialElementRect = element.getBoundingClientRect();
+    if (
+      !initialMetrics ||
+      initialPageRect.width <= 0 ||
+      initialPageRect.height <= 0
+    ) {
+      return;
+    }
 
     event.preventDefault();
     event.stopPropagation();
 
-    const startX = event.clientX;
-    const startY = event.clientY;
-    const startNormalized = rotateNormalizedRect(
-      annotation.nx,
-      annotation.ny,
-      annotation.nw,
-      annotation.nh,
-      annotation.rotation,
-      metrics.rotation,
-    );
+    // Drag by the absolute screen rectangle instead of page-relative deltas.
+    // That way the same pointer movement can carry the box across page borders.
+    const offsetX = event.clientX - initialElementRect.left;
+    const offsetY = event.clientY - initialElementRect.top;
+    const elementWidth = initialElementRect.width;
+    const elementHeight = initialElementRect.height;
+
+    let currentPageEl = initialPageEl;
 
     const ownerDocument = element.ownerDocument;
     element.classList.add("is-dragging");
 
     const onMove = (moveEvent: PointerEvent): void => {
-      const deltaX = (moveEvent.clientX - startX) / pageRect.width;
-      const deltaY = (moveEvent.clientY - startY) / pageRect.height;
-      const movedX = clamp(
-        startNormalized.x + deltaX,
-        0,
-        Math.max(0, 1 - startNormalized.width),
+      const left = moveEvent.clientX - offsetX;
+      const top = moveEvent.clientY - offsetY;
+
+      // Use the centre of the box to decide which page it currently belongs
+      // to. Crossing that border moves the annotation to the other page.
+      const targetPageEl =
+        this.findPageElementAtPoint(
+          state,
+          left + elementWidth / 2,
+          top + elementHeight / 2,
+        ) ?? currentPageEl;
+
+      if (targetPageEl !== currentPageEl) {
+        currentPageEl = targetPageEl;
+        this.ensureLayer(currentPageEl).appendChild(element);
+        const targetPageNumber = Number(currentPageEl.dataset.pageNumber);
+        if (Number.isFinite(targetPageNumber)) {
+          element.dataset.pageNumber = String(targetPageNumber);
+        }
+      }
+
+      const metrics = this.getPageMetrics(state, currentPageEl);
+      const pageRect = this.getPageContentRect(currentPageEl);
+      if (!metrics || pageRect.width <= 0 || pageRect.height <= 0) return;
+
+      const clampedLeft = clamp(
+        left,
+        pageRect.left,
+        Math.max(pageRect.left, pageRect.right - elementWidth),
       );
-      const movedY = clamp(
-        startNormalized.y + deltaY,
-        0,
-        Math.max(0, 1 - startNormalized.height),
+      const clampedTop = clamp(
+        top,
+        pageRect.top,
+        Math.max(pageRect.top, pageRect.bottom - elementHeight),
       );
 
-      const back = rotateNormalizedRect(
-        movedX,
-        movedY,
-        startNormalized.width,
-        startNormalized.height,
-        metrics.rotation,
-        annotation.rotation,
+      const width = clamp(elementWidth / pageRect.width, 0.02, 1);
+      const height = clamp(elementHeight / pageRect.height, 0.005, 1);
+
+      annotation.page = metrics.pageNumber;
+      // The box is now positioned in the target page's display coordinate
+      // system, so store its coordinates for that rotation directly.
+      annotation.rotation = metrics.rotation;
+      annotation.nw = width;
+      annotation.nh = height;
+      annotation.nx = clamp(
+        (clampedLeft - pageRect.left) / pageRect.width,
+        0,
+        Math.max(0, 1 - width),
+      );
+      annotation.ny = clamp(
+        (clampedTop - pageRect.top) / pageRect.height,
+        0,
+        Math.max(0, 1 - height),
       );
 
-      annotation.nx = back.x;
-      annotation.ny = back.y;
       this.applyAnnotationGeometry(element, annotation, metrics);
     };
 
@@ -2470,9 +2531,22 @@ export default class PdfTextboxPlugin extends Plugin {
       ownerDocument.removeEventListener("pointerup", onUp);
       ownerDocument.removeEventListener("pointercancel", onUp);
       element.classList.remove("is-dragging");
-      this.updatePdfCoordinates(annotation, metrics);
+
+      const metrics = this.getPageMetrics(state, currentPageEl);
+      if (metrics) {
+        annotation.page = metrics.pageNumber;
+        annotation.rotation = metrics.rotation;
+        annotation.nw = clamp(annotation.nw, 0.02, 1);
+        annotation.nh = clamp(annotation.nh, 0.005, 1);
+        annotation.nx = clamp(annotation.nx, 0, Math.max(0, 1 - annotation.nw));
+        annotation.ny = clamp(annotation.ny, 0, Math.max(0, 1 - annotation.nh));
+        this.updatePdfCoordinates(annotation, metrics);
+        this.applyAnnotationGeometry(element, annotation, metrics);
+      }
+
       annotation.updatedAt = Date.now();
       this.requestSave();
+      this.renderAll(state);
     };
 
     ownerDocument.addEventListener("pointermove", onMove);
@@ -2648,6 +2722,12 @@ export default class PdfTextboxPlugin extends Plugin {
         },
       }),
       editorLivePreviewField,
+      Prec.high(
+        EditorView.domEventHandlers({
+          paste: (event, view) =>
+            this.handleImagePaste(event, view, state.filePath),
+        }),
+      ),
     ];
 
     if (markdownLanguage) extensions.push(markdownLanguage);
@@ -2660,6 +2740,18 @@ export default class PdfTextboxPlugin extends Plugin {
     extensions.push(
       Prec.high(
         keymap.of([
+          {
+            key: "Enter",
+            run: (view) => this.handleListEnter(view),
+          },
+          {
+            key: "Tab",
+            run: (view) => indentMore(view),
+          },
+          {
+            key: "Shift-Tab",
+            run: (view) => indentLess(view),
+          },
           {
             key: "Mod-Enter",
             run: () => {
@@ -2845,6 +2937,189 @@ export default class PdfTextboxPlugin extends Plugin {
     );
     view.focus();
     return true;
+  }
+
+  /**
+   * Continues Markdown bullet and numbered lists when Enter is pressed.
+   * Pressing Enter on an empty list item removes the marker instead.
+   */
+  private handleListEnter(view: EditorView): boolean {
+    const state = view.state;
+    const range = state.selection.main;
+    if (!range.empty) return false;
+
+    const line = state.doc.lineAt(range.head);
+    const before = state.sliceDoc(line.from, range.head);
+    const after = state.sliceDoc(range.head, line.to);
+
+    const match =
+      /^([ \t]*)(?:([-+*])|(\d+)([.)]))([ \t]+)(\[[ xX]\][ \t]+)?/.exec(
+        before,
+      );
+    if (!match) return false;
+
+    const indent = match[1] ?? "";
+    const bullet = match[2];
+    const number = match[3];
+    const delimiter = match[4] ?? ".";
+    const spacing = match[5] ?? " ";
+    const taskMarker = match[6] ? "[ ] " : "";
+    const contentBeforeCursor = before.slice(match[0].length);
+    const itemIsEmpty =
+      contentBeforeCursor.trim().length === 0 && after.trim().length === 0;
+
+    if (itemIsEmpty) {
+      // Leave the list and keep the indentation instead of creating a new,
+      // permanently empty bullet point.
+      view.dispatch({
+        changes: { from: line.from, to: line.to, insert: indent },
+        selection: EditorSelection.cursor(line.from + indent.length),
+        scrollIntoView: true,
+      });
+      view.focus();
+      return true;
+    }
+
+    const marker = bullet ?? `${Number(number) + 1}${delimiter}`;
+    const insert = `\n${indent}${marker}${spacing}${taskMarker}`;
+    view.dispatch({
+      changes: { from: range.head, insert },
+      selection: EditorSelection.cursor(range.head + insert.length),
+      scrollIntoView: true,
+    });
+    view.focus();
+    return true;
+  }
+
+  /**
+   * Saves images from the clipboard to the vault and inserts an embed link
+   * (`![[Pasted image ....png]]`) at the cursor.
+   */
+  private handleImagePaste(
+    event: ClipboardEvent,
+    view: EditorView,
+    sourcePath: string,
+  ): boolean {
+    const clipboard = event.clipboardData;
+    if (!clipboard) return false;
+
+    const files: File[] = [];
+    const items = Array.from(clipboard.items ?? []);
+    for (const item of items) {
+      if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+
+    if (files.length === 0) {
+      for (const file of Array.from(clipboard.files ?? [])) {
+        if (file.type.startsWith("image/")) files.push(file);
+      }
+    }
+
+    if (files.length === 0) return false;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const range = view.state.selection.main;
+    const from = range.from;
+    const to = range.to;
+    void this.pasteImages(files, sourcePath, view, from, to).catch((error) => {
+      console.error("PDF Textbox: could not paste image", error);
+    });
+    return true;
+  }
+
+  private async pasteImages(
+    files: readonly File[],
+    sourcePath: string,
+    view: EditorView,
+    from: number,
+    to: number,
+  ): Promise<void> {
+    const links: string[] = [];
+    let index = 0;
+
+    for (const file of files) {
+      index += 1;
+      try {
+        const bytes = await file.arrayBuffer();
+        const extension = this.extensionForImage(file.type, file.name);
+        const filename = `Pasted image ${this.timestampForFilename()}${
+          files.length > 1 ? ` ${index}` : ""
+        }.${extension}`;
+        const path = await this.app.fileManager.getAvailablePathForAttachment(
+          filename,
+          sourcePath || undefined,
+        );
+        const created = await this.app.vault.createBinary(path, bytes);
+        let link = this.app.fileManager.generateMarkdownLink(
+          created,
+          sourcePath,
+        );
+        if (!link.startsWith("!")) link = `!${link}`;
+        links.push(link);
+      } catch (error) {
+        console.error("PDF Textbox: could not save pasted image", error);
+        new Notice(
+          `Could not save pasted image: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+
+    if (links.length === 0) return;
+    if (!view.dom.isConnected) return;
+
+    const insert = links.join("\n");
+    const docLength = view.state.doc.length;
+    const safeFrom = clamp(from, 0, docLength);
+    const safeTo = clamp(to, safeFrom, docLength);
+    view.dispatch({
+      changes: { from: safeFrom, to: safeTo, insert },
+      selection: EditorSelection.cursor(safeFrom + insert.length),
+      scrollIntoView: true,
+    });
+    view.focus();
+  }
+
+  private extensionForImage(mimeType: string, filename: string): string {
+    switch (mimeType.toLowerCase()) {
+      case "image/png":
+        return "png";
+      case "image/jpeg":
+      case "image/jpg":
+        return "jpg";
+      case "image/gif":
+        return "gif";
+      case "image/webp":
+        return "webp";
+      case "image/svg+xml":
+        return "svg";
+      case "image/bmp":
+        return "bmp";
+      case "image/tiff":
+        return "tiff";
+      case "image/avif":
+        return "avif";
+      default: {
+        const extension = /\.([a-z0-9]+)$/i.exec(filename)?.[1];
+        return extension ? extension.toLowerCase() : "png";
+      }
+    }
+  }
+
+  private timestampForFilename(): string {
+    const now = new Date();
+    const pad = (value: number, length = 2): string =>
+      String(value).padStart(length, "0");
+    return (
+      `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
+      `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}` +
+      `${pad(now.getMilliseconds(), 3)}`
+    );
   }
 
   private getLatexSuiteExtensions(): Extension | null {
@@ -4357,6 +4632,28 @@ export default class PdfTextboxPlugin extends Plugin {
     return state.viewerEl.querySelector<HTMLElement>(
       `.page[data-page-number="${pageNumber}"]`,
     );
+  }
+
+  /** Returns the PDF page whose rendered content contains the screen point. */
+  private findPageElementAtPoint(
+    state: PdfViewState,
+    clientX: number,
+    clientY: number,
+  ): HTMLElement | null {
+    const pages = state.viewerEl.querySelectorAll<HTMLElement>(PAGE_SELECTOR);
+    for (const pageEl of Array.from(pages)) {
+      const rect = this.getPageContentRect(pageEl);
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      if (
+        clientX >= rect.left &&
+        clientX <= rect.right &&
+        clientY >= rect.top &&
+        clientY <= rect.bottom
+      ) {
+        return pageEl;
+      }
+    }
+    return null;
   }
 
   /* ---------------------------- coordinate maths -------------------------- */

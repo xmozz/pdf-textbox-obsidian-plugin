@@ -15,6 +15,9 @@ An Obsidian plugin that adds editable Markdown/LaTeX textboxes to Obsidian's nat
 - **Wrap a selection**: With text selected, typing `*`, `_`, `` ` ``, `$`, `=` or `~` wraps the selection instead of replacing it. Typing the character twice gives bold, display math or a highlight.
 - **Clickable links**: Links in a textbox open in the browser or resolve inside the vault. When burning, invisible PDF Link annotations are added on top of the rendered link text, so links also work in the burned PDF.
 - **Theme-aware text colours**: Bold, italic and headings use the colours of the active Obsidian theme. If a theme colour would be hard to read on the textbox background, the plugin falls back to a high-contrast black or white.
+- **List editing**: Pressing **Enter** on a bullet, numbered, or task list item continues the list with the same marker (numbering increments automatically). **Tab** / **Shift+Tab** indent or outdent the current line without moving focus out of the textbox. Pressing **Enter** on an empty list item ends the list.
+- **Paste images**: Paste a screenshot or image with `Ctrl/Cmd+V` while editing. The image is saved to the vault's attachment folder and inserted as an `![[…]]` embed at the cursor.
+- **Move across pages**: Drag a textbox by its top-left handle onto another page of the same PDF. Its page, position, and rotation are updated and saved, including when pages have different sizes or orientations.
 - **Readable cursor**: The editor cursor follows the text contrast color and is rendered thicker, so it remains visible on light and dark backgrounds.
 - **Collapsible textboxes**: In edit mode, the minus button collapses a textbox to a small T icon. Hovering the icon temporarily expands the content; clicking the icon expands it permanently. The collapsed state is saved.
 - **Per-textbox styling**: Right-click a textbox in edit mode to change its background color, adjust its text size, or burn only that textbox into the PDF.
@@ -47,12 +50,14 @@ BRAT downloads `main.js`, `manifest.json`, and `styles.css` from the latest GitH
 2. Click **Place textbox** in the PDF toolbar. The button is armed for the next placement only.
 3. Click a spot on the page for the default size, or hold the mouse button and drag a rectangle to define the size. The textbox is created and focused.
 4. Enter content. Markdown and LaTeX are rendered after saving:
+   - **Enter** continues bullet, numbered, and task lists; **Tab** / **Shift+Tab** indent or outdent the current line.
+   - **Ctrl/Cmd + V** with an image in the clipboard saves it to the vault's attachment folder and inserts an embed link.
    - **Esc** cancels a new empty textbox or restores the previous text.
    - **Ctrl/Cmd + Enter** or clicking outside saves.
    - Clearing the text of an existing textbox removes it.
 5. To add another textbox, click **Place textbox** again.
 6. Turn on **Edit textboxes** for persistent editing:
-   - Drag the handle at the top-left to move a textbox.
+   - Drag the handle at the top-left to move a textbox, including onto another page of the same PDF.
    - Drag the handle at the bottom-right to resize it horizontally and vertically.
    - Use the minus button at the top-right to collapse the textbox to a small T icon.
    - Hover the icon to preview the full textbox temporarily; click it to expand the textbox permanently.
