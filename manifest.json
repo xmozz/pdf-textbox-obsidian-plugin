@@ -1,7 +1,7 @@
 {
   "id": "pdf-textbox",
   "name": "PDF Textbox",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "minAppVersion": "1.9.0",
   "description": "Markdown/LaTeX textboxes directly on PDF pages – zoom-stable, persistent, and burnable into the PDF.",
   "author": "xmozz",
