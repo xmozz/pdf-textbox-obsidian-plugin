@@ -1202,7 +1202,12 @@ export default class PdfTextboxPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("delete", (file) => this.onFileDeleted(file)));
 
     this.addSettingTab(new PdfTextboxSettingTab(this.app, this));
-    this.app.workspace.onLayoutReady(() => this.scheduleSync(0));
+    this.app.workspace.onLayoutReady(() => {
+      this.scheduleSync(0);
+      this.scheduleSync(300);
+      this.scheduleSync(1000);
+      this.scheduleSync(2500);
+    });
   }
 
   async onunload(): Promise<void> {
@@ -4117,6 +4122,10 @@ export default class PdfTextboxPlugin extends Plugin {
 
   private scheduleRenderAll(state: PdfViewState): void {
     if (this.states.get(state.leaf) !== state || this.disposed) return;
+    // Do not re-render while a textbox is being edited: zooming would destroy
+    // the editor and corrupt its geometry. The textbox is re-rendered when
+    // editing ends.
+    if (state.editing) return;
 
     const win = state.viewerContainerEl.ownerDocument.defaultView ?? window;
 
@@ -4144,6 +4153,7 @@ export default class PdfTextboxPlugin extends Plugin {
 
   private renderAll(state: PdfViewState): void {
     if (this.states.get(state.leaf) !== state || this.disposed) return;
+    if (state.editing) return;
 
     this.ensureToolbar(state);
 
@@ -4180,9 +4190,10 @@ export default class PdfTextboxPlugin extends Plugin {
       }
 
       existingElements.delete(annotation.id);
-      this.applyAnnotationGeometry(element, annotation, metrics);
 
       const isEditingThis = state.editing?.annotation.id === annotation.id;
+
+      this.applyAnnotationGeometry(element, annotation, metrics);
 
       // If the page was re-rendered while this box was being edited, the
       // original editor element is gone. Persist its text and leave edit mode

@@ -1,6 +1,6 @@
 {
   "name": "pdf-textbox",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Adds editable Markdown/LaTeX textboxes to Obsidian's native PDF viewer and can burn them into the PDF.",
   "main": "main.js",
   "scripts": {
