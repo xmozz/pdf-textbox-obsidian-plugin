@@ -1716,7 +1716,7 @@ export default class PdfTextboxPlugin extends Plugin {
     const Observer = ownerDocument.defaultView?.MutationObserver;
     if (Observer) {
       const observer = new Observer(() => this.scheduleRenderAll(state));
-      observer.observe(viewerEl, { childList: true });
+      observer.observe(viewerEl, { childList: true, subtree: true });
       state.observer = observer;
       state.cleanups.push(() => observer.disconnect());
 
@@ -2877,6 +2877,7 @@ export default class PdfTextboxPlugin extends Plugin {
           state.editing === session &&
           !session.committing &&
           !editorView.hasFocus &&
+          editorView.dom.isConnected &&
           !(editorView.dom.ownerDocument.activeElement?.closest?.(
             ".pdf-textbox-color-menu",
           ))
@@ -3289,7 +3290,15 @@ export default class PdfTextboxPlugin extends Plugin {
     } else {
       annotation.text = value;
 
-      if (metrics && pageRect.width > 0 && pageRect.height > 0) {
+      if (
+        metrics &&
+        pageRect.width > 0 &&
+        pageRect.height > 0 &&
+        pageEl.isConnected &&
+        element.isConnected &&
+        elementRect.width > 0 &&
+        elementRect.height > 0
+      ) {
         const measuredX = (elementRect.left - pageRect.left) / pageRect.width;
         const measuredY = (elementRect.top - pageRect.top) / pageRect.height;
         const measuredWidth = elementRect.width / pageRect.width;
@@ -4167,6 +4176,16 @@ export default class PdfTextboxPlugin extends Plugin {
 
     const layer = this.ensureLayer(pageEl);
     const annotations = this.annotationsForPage(state.filePath, metrics.pageNumber);
+    const editingSession = state.editing;
+    if (
+      editingSession &&
+      editingSession.pageNumber === metrics.pageNumber &&
+      !annotations.some((annotation) => annotation.id === editingSession.annotation.id)
+    ) {
+      // A newly placed textbox is not persisted until editing is committed, but
+      // it still needs a host if PDF.js replaces its page while it is edited.
+      annotations.push(editingSession.annotation);
+    }
 
     const existingElements = new Map<string, HTMLElement>();
     for (const child of Array.from(layer.children)) {
@@ -4182,7 +4201,6 @@ export default class PdfTextboxPlugin extends Plugin {
     for (const annotation of annotations) {
       liveIds.add(annotation.id);
 
-      const reused = existingElements.has(annotation.id);
       let element = existingElements.get(annotation.id);
       if (!element) {
         element = this.createAnnotationElement(state, annotation);
@@ -4195,33 +4213,25 @@ export default class PdfTextboxPlugin extends Plugin {
 
       this.applyAnnotationGeometry(element, annotation, metrics);
 
-      // If the page was re-rendered while this box was being edited, the
-      // original editor element is gone. Persist its text and leave edit mode
-      // instead of keeping a detached/teleported editor.
-      if (isEditingThis && (!reused || !element.isConnected)) {
+      if (isEditingThis) {
         const session = state.editing!;
-        const value = session.editorView.state.doc.toString();
-        if (value.trim().length === 0) {
-          if (!session.isNew) {
-            const index = this.data.annotations.findIndex(
-              (entry) => entry.id === annotation.id,
-            );
-            if (index >= 0) this.data.annotations.splice(index, 1);
-            this.requestSave();
-          }
-          element.remove();
+        const body = element.querySelector<HTMLElement>(".pdf-textbox-body");
+        body?.classList.add("is-hidden");
+        element.classList.add("is-editing");
+        element.style.height = "auto";
+
+        if (session.editorView.dom.parentElement !== element) {
+          // Keep the existing CodeMirror instance (and its selection/history)
+          // alive while moving it from PDF.js' discarded page to the new one.
+          element.appendChild(session.editorView.dom);
+          session.element = element;
+          session.pageEl = pageEl;
+          session.pageNumber = metrics.pageNumber;
+          session.editorView.focus();
         } else {
-          annotation.text = value;
-          annotation.updatedAt = Date.now();
-          this.requestSave();
-          this.renderAnnotationBody(state, element, annotation);
-        }
-        state.editing = null;
-        session.committing = true;
-        try {
-          session.editorView.destroy();
-        } catch {
-          // The editor may already be detached.
+          session.element = element;
+          session.pageEl = pageEl;
+          session.pageNumber = metrics.pageNumber;
         }
         continue;
       }
