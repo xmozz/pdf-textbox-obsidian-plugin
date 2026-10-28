@@ -823,10 +823,11 @@
 
 .pdf-textbox-burn-host {
   position: fixed;
-  left: -10000px;
+  left: 0;
   top: 0;
   z-index: -1;
   pointer-events: none;
+  opacity: 0.01;
 }
 
 .pdf-textbox-burn-host .pdf-textbox-annotation {

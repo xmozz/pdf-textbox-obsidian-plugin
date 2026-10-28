@@ -3651,7 +3651,7 @@ export default class PdfTextboxPlugin extends Plugin {
     element.style.top = "0";
     element.style.width = `${width}px`;
     element.style.minHeight = `${minHeight}px`;
-    element.style.fontSize = `${fontSize}px`;
+    element.style.setProperty("font-size", `${fontSize}px`, "important");
     element.style.padding = "2.5px 4.5px";
     element.style.borderRadius = "3px";
     element.style.backgroundColor = hexToRgba(
