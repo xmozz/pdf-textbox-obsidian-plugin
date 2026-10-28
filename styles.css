@@ -84,6 +84,10 @@
 
 /* Edit mode only makes existing boxes interactive; blank page areas still
    reach the native PDF viewer (text selection, links, ...). */
+.pdf-viewer-container.pdf-textbox-burning .pdf-textbox-annotation {
+  pointer-events: none !important;
+}
+
 .pdf-viewer-container.pdf-textbox-edit-mode .pdf-textbox-annotation {
   pointer-events: auto;
   cursor: text;

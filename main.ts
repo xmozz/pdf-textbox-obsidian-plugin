@@ -72,6 +72,7 @@ const LAYER_CLASS = "pdf-textbox-layer";
 const ANNOTATION_CLASS = "pdf-textbox-annotation";
 const EDIT_MODE_CLASS = "pdf-textbox-edit-mode";
 const CREATE_MODE_CLASS = "pdf-textbox-create-mode";
+const BURN_MODE_CLASS = "pdf-textbox-burning";
 const SAVE_DEBOUNCE_MS = 400;
 const DEFAULT_FONT_SIZE = 12;
 const MIN_HEIGHT_PDF = 24;
@@ -1124,6 +1125,7 @@ export default class PdfTextboxPlugin extends Plugin {
   private readonly retryTimers = new Map<WorkspaceLeaf, number>();
   private saveTimer: number | null = null;
   private syncTimer: number | null = null;
+  private saveRetryCount = 0;
   private saveQueue: Promise<void> = Promise.resolve();
   private dirty = false;
   private disposed = false;
@@ -1227,6 +1229,7 @@ export default class PdfTextboxPlugin extends Plugin {
 
   private requestSave(): void {
     this.dirty = true;
+    this.saveRetryCount = 0;
     if (this.saveTimer !== null) {
       window.clearTimeout(this.saveTimer);
     }
@@ -1256,10 +1259,22 @@ export default class PdfTextboxPlugin extends Plugin {
 
     try {
       await this.saveQueue;
+      this.saveRetryCount = 0;
     } catch (error) {
       this.dirty = true;
       console.error("PDF Textbox: could not save data.json", error);
+      this.scheduleSaveRetry();
     }
+  }
+
+  private scheduleSaveRetry(): void {
+    if (this.disposed || this.saveTimer !== null) return;
+    const delay = Math.min(1000 * 2 ** this.saveRetryCount, 30_000);
+    this.saveRetryCount += 1;
+    this.saveTimer = window.setTimeout(() => {
+      this.saveTimer = null;
+      void this.flushSave();
+    }, delay);
   }
 
   private onFileRenamed(file: TAbstractFile, oldPath: string): void {
@@ -1702,6 +1717,20 @@ export default class PdfTextboxPlugin extends Plugin {
 
       let popupTimer: number | null = null;
       const popupObserver = new Observer(() => {
+        const activeAnnotationId = state.activeBurnedAnnotationId;
+        if (activeAnnotationId) {
+          for (const popup of Array.from(
+            state.viewerEl.querySelectorAll<HTMLElement>(".popup"),
+          )) {
+            if (
+              popup.querySelector(".popupTitle")?.textContent?.trim() ===
+                "PDF Textbox" &&
+              !popup.dataset.pdfTextboxAnnotationId
+            ) {
+              popup.dataset.pdfTextboxAnnotationId = activeAnnotationId;
+            }
+          }
+        }
         if (popupTimer !== null) window.clearTimeout(popupTimer);
         popupTimer = window.setTimeout(() => {
           popupTimer = null;
@@ -1996,6 +2025,7 @@ export default class PdfTextboxPlugin extends Plugin {
   }
 
   private setCreateMode(state: PdfViewState, enabled: boolean): void {
+    if (enabled && this.burning) return;
     if (enabled) {
       this.commitEditing(state);
       this.closeAnnotationColorMenu();
@@ -2014,7 +2044,7 @@ export default class PdfTextboxPlugin extends Plugin {
     state: PdfViewState,
     event: PointerEvent,
   ): void {
-    if (!state.createMode || state.placement || event.button !== 0) return;
+    if (this.burning || !state.createMode || state.placement || event.button !== 0) return;
 
     const target = event.target as Element | null;
     if (!target || typeof target.closest !== "function") return;
@@ -2348,7 +2378,7 @@ export default class PdfTextboxPlugin extends Plugin {
     collapseButton.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (!state.editMode) return;
+      if (this.burning || !state.editMode) return;
       annotation.collapsed = true;
       annotation.updatedAt = Date.now();
       this.applyCollapsedState(element, annotation);
@@ -2362,6 +2392,7 @@ export default class PdfTextboxPlugin extends Plugin {
     collapsedIcon.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (this.burning) return;
       annotation.collapsed = false;
       annotation.updatedAt = Date.now();
       this.applyCollapsedState(element, annotation);
@@ -2435,7 +2466,7 @@ export default class PdfTextboxPlugin extends Plugin {
     element: HTMLElement,
     event: PointerEvent,
   ): void {
-    if (!state.editMode || state.editing) return;
+    if (this.burning || !state.editMode || state.editing) return;
 
     const initialPageEl = this.findPageElement(state, annotation.page);
     if (!initialPageEl) return;
@@ -2560,10 +2591,10 @@ export default class PdfTextboxPlugin extends Plugin {
     element: HTMLElement,
     event: PointerEvent,
   ): void {
-    if (!state.editMode || state.editing) return;
+    if (this.burning || !state.editMode || state.editing) return;
 
     const pageEl = this.findPageElement(state, annotation.page);
-    if (!pageEl) return;
+    if (!pageEl || this.burning) return;
 
     const metrics = this.getPageMetrics(state, pageEl);
     const pageRect = this.getPageContentRect(pageEl);
@@ -2668,7 +2699,8 @@ export default class PdfTextboxPlugin extends Plugin {
     if (
       requestId !== state.editorRequestId ||
       !element.isConnected ||
-      state.editing
+      state.editing ||
+      this.burning
     ) {
       return;
     }
@@ -3025,7 +3057,8 @@ export default class PdfTextboxPlugin extends Plugin {
     const range = view.state.selection.main;
     const from = range.from;
     const to = range.to;
-    void this.pasteImages(files, sourcePath, view, from, to).catch((error) => {
+    const originalDocument = view.state.doc.toString();
+    void this.pasteImages(files, sourcePath, view, from, to, originalDocument).catch((error) => {
       console.error("PDF Textbox: could not paste image", error);
     });
     return true;
@@ -3037,6 +3070,7 @@ export default class PdfTextboxPlugin extends Plugin {
     view: EditorView,
     from: number,
     to: number,
+    originalDocument: string,
   ): Promise<void> {
     const links: string[] = [];
     let index = 0;
@@ -3075,8 +3109,12 @@ export default class PdfTextboxPlugin extends Plugin {
 
     const insert = links.join("\n");
     const docLength = view.state.doc.length;
-    const safeFrom = clamp(from, 0, docLength);
-    const safeTo = clamp(to, safeFrom, docLength);
+    const documentUnchanged = view.state.doc.toString() === originalDocument;
+    const insertionRange = documentUnchanged
+      ? { from, to }
+      : view.state.selection.main;
+    const safeFrom = clamp(insertionRange.from, 0, docLength);
+    const safeTo = clamp(insertionRange.to, safeFrom, docLength);
     view.dispatch({
       changes: { from: safeFrom, to: safeTo, insert },
       selection: EditorSelection.cursor(safeFrom + insert.length),
@@ -3281,6 +3319,7 @@ export default class PdfTextboxPlugin extends Plugin {
   }
 
   private deleteAnnotation(state: PdfViewState, id: string): void {
+    if (this.burning) return;
     const session = state.editing;
     if (session?.annotation.id === id) {
       session.committing = true;
@@ -3398,9 +3437,23 @@ export default class PdfTextboxPlugin extends Plugin {
     }
 
     this.burning = true;
+    const lockedStates = [...this.states.values()].filter(
+      (state) => state.filePath === filePath,
+    );
+    const fileAnnotationSnapshot = this.data.annotations
+      .filter((annotation) => annotation.file === filePath)
+      .map((annotation) => ({ ...annotation }));
     const progress = new Notice("Burning textboxes into the PDF…", 0);
 
     try {
+      this.closeAnnotationColorMenu();
+      for (const state of lockedStates) {
+        if (state.editing) this.commitEditing(state);
+        this.setCreateMode(state, false);
+        this.cancelPlacement(state);
+        state.viewerContainerEl.classList.add(BURN_MODE_CLASS);
+      }
+
       const sourceBytes = await this.app.vault.readBinary(sourceFile);
       const pdf = await PDFDocument.load(sourceBytes, {
         ignoreEncryption: true,
@@ -3576,6 +3629,7 @@ export default class PdfTextboxPlugin extends Plugin {
           burnedIds.add(annotation.id);
         } finally {
           burn.host.remove();
+          burn.component.unload();
         }
       }
 
@@ -3589,13 +3643,33 @@ export default class PdfTextboxPlugin extends Plugin {
         bytes.byteOffset,
         bytes.byteOffset + bytes.byteLength,
       ) as ArrayBuffer;
+      const currentFileAnnotations = this.data.annotations.filter(
+        (annotation) => annotation.file === filePath,
+      );
+      if (
+        JSON.stringify(currentFileAnnotations) !==
+        JSON.stringify(fileAnnotationSnapshot)
+      ) {
+        throw new Error("Textbox data changed while burning; no PDF changes were written.");
+      }
+      const currentSourceBytes = await this.app.vault.readBinary(sourceFile);
+      const originalBytes = new Uint8Array(sourceBytes);
+      const latestBytes = new Uint8Array(currentSourceBytes);
+      if (
+        originalBytes.length !== latestBytes.length ||
+        originalBytes.some((byte, index) => byte !== latestBytes[index])
+      ) {
+        throw new Error("The PDF changed while burning; no PDF changes were written.");
+      }
+
       await this.app.vault.modifyBinary(sourceFile, targetBytes);
 
       // The burned textboxes are now part of the PDF. Remove only the
       // annotations that were actually baked so the same boxes do not appear
       // twice on top of the replaced file.
       this.data.annotations = this.data.annotations.filter(
-        (annotation) => !burnedIds.has(annotation.id),
+        (annotation) =>
+          annotation.file !== filePath || !burnedIds.has(annotation.id),
       );
       this.dirty = true;
       await this.flushSave();
@@ -3627,6 +3701,9 @@ export default class PdfTextboxPlugin extends Plugin {
         8000,
       );
     } finally {
+      for (const state of lockedStates) {
+        state.viewerContainerEl.classList.remove(BURN_MODE_CLASS);
+      }
       progress.hide();
       this.burning = false;
     }
@@ -3640,7 +3717,9 @@ export default class PdfTextboxPlugin extends Plugin {
     fontSize: number,
     color: string,
     minHeight: number,
-  ): Promise<{ host: HTMLElement; element: HTMLElement }> {
+  ): Promise<{ host: HTMLElement; element: HTMLElement; component: Component }> {
+    const component = new Component();
+    component.load();
     const host = ownerDocument.createElement("div");
     host.className = "pdf-textbox-burn-host";
 
@@ -3673,15 +3752,16 @@ export default class PdfTextboxPlugin extends Plugin {
         markdown,
         body,
         sourcePath,
-        this,
+        component,
       );
       await this.waitForBurnContent(body);
     } catch (error) {
       host.remove();
+      component.unload();
       throw error;
     }
 
-    return { host, element };
+    return { host, element, component };
   }
 
   private async waitForBurnContent(container: HTMLElement): Promise<void> {
@@ -3757,7 +3837,10 @@ export default class PdfTextboxPlugin extends Plugin {
       if (popup.querySelector(".pdf-textbox-annotation-delete")) continue;
       const title = popup.querySelector(".popupTitle")?.textContent?.trim();
       if (title !== "PDF Textbox") continue;
-      if (!state.activeBurnedAnnotationId) continue;
+      const popupAnnotationId =
+        popup.dataset.pdfTextboxAnnotationId ?? state.activeBurnedAnnotationId;
+      if (!popupAnnotationId) continue;
+      popup.dataset.pdfTextboxAnnotationId = popupAnnotationId;
 
       const doc = popup.ownerDocument;
       let actions =
@@ -3782,8 +3865,7 @@ export default class PdfTextboxPlugin extends Plugin {
       setIcon(button, "trash-2");
 
       const deleteCurrent = (): void => {
-        const id = state.activeBurnedAnnotationId;
-        if (id) void this.deleteBurnedPdfAnnotation(state, id);
+        void this.deleteBurnedPdfAnnotation(state, popupAnnotationId);
       };
 
       button.addEventListener("click", (event) => {
@@ -4440,6 +4522,7 @@ export default class PdfTextboxPlugin extends Plugin {
     ];
 
     const applyColor = (value: string): void => {
+      if (this.burning) return;
       annotation.color = normalizeHexColor(value);
       annotation.updatedAt = Date.now();
       this.applyAnnotationColors(element, annotation);
@@ -4514,6 +4597,7 @@ export default class PdfTextboxPlugin extends Plugin {
     sizeRow.appendChild(sizePlus);
 
     const applyFontSize = (delta: number): void => {
+      if (this.burning) return;
       annotation.fontSize = clamp(annotation.fontSize + delta, 6, 96);
       annotation.updatedAt = Date.now();
       const pageEl = this.findPageElement(state, annotation.page);
