@@ -23,7 +23,7 @@ An Obsidian plugin that adds editable Markdown/LaTeX textboxes to Obsidian's nat
 - **Per-textbox styling**: Right-click a textbox in edit mode to change its background color, adjust its text size, or burn only that textbox into the PDF.
 - **Toolbar defaults**: A color picker and a font-size dropdown in the PDF toolbar define the defaults for new textboxes.
 - **Zoom- and scroll-stable**: Positions are stored in PDF coordinates (scale 1) and as normalized values. Overlays live inside the PDF page DOM and are realigned on zoom, rotation, scrolling, and page rendering.
-- **Persistent**: All textboxes are saved in the plugin's `data.json` (vault path, page, coordinates, size, text, color, and font size).
+- **Persistent**: Textboxes are stored per PDF in `.obsidian/plugins/pdf-textbox/annotations/`, with a small index and the settings in `data.json`. Existing installations are migrated automatically on first start; a backup is kept as `data.json.v1.bak`.
 - **Burn into PDF**: The **Burn textboxes into PDF** command replaces the current PDF with a version that stores all textboxes as standard PDF Stamp annotations. You can also burn a single textbox from its context menu. Clicking a burned annotation in Obsidian shows a trash button; you can also focus it and press **Delete** or **Backspace** to remove it.
 - **Multiple PDF tabs** are supported at the same time.
 
@@ -104,11 +104,22 @@ No copy is created. After burning, the textbox is a regular PDF annotation named
 
 ## Data model
 
-The plugin stores its data in `data.json`:
+The plugin keeps a small index and the settings in `data.json` and stores the
+textboxes of each PDF in its own shard file:
+
+```
+.obsidian/plugins/pdf-textbox/
+  data.json
+  data.json.v1.bak          # once, after migrating from v0.1.x
+  annotations/
+    <hash>-Document.json
+```
+
+`data.json`:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "settings": {
     "defaultWidthPercent": 22,
     "defaultFontSize": 12,
@@ -118,15 +129,24 @@ The plugin stores its data in `data.json`:
     "livePreviewWhileEditing": true,
     "editModeEnabled": true
   },
+  "shards": {
+    "Folder/Document.pdf": "4f2a…-Document",
+    "Other.pdf": "91bc…-Other"
+  }
+}
+```
+
+A shard (`annotations/<id>.json`):
+
+```json
+{
+  "version": 2,
+  "file": "Folder/Document.pdf",
   "annotations": [
     {
       "id": "7a5e…",
       "file": "Folder/Document.pdf",
       "page": 3,
-      "x": 142.5,
-      "y": 260.25,
-      "width": 180,
-      "height": 42,
       "nx": 0.2328,
       "ny": 0.3286,
       "nw": 0.2941,
@@ -143,14 +163,28 @@ The plugin stores its data in `data.json`:
 }
 ```
 
-- `x`, `y`, `width`, and `height` are PDF page coordinates at scale 1 for the rotation that was active when the textbox was created.
-- `nx`, `ny`, `nw`, and `nh` are normalized 0–1 values used for rendering.
+- `nx`, `ny`, `nw`, and `nh` are normalized 0–1 values used for rendering and burning.
 - `text` contains the original Markdown/LaTeX source.
 - `color` is the background color of that textbox.
 - `collapsed` stores whether the textbox is minimized to its hoverable icon.
 - `editModeEnabled` remembers whether edit mode should be on after reload or PDF switches.
 - `livePreviewWhileEditing` controls whether formatting is applied while typing.
-- File paths are updated automatically when a PDF is renamed or moved; deleting a PDF removes its textboxes.
+- File paths are updated automatically when a PDF is renamed or moved; deleting a PDF removes its shard.
+- A save only rewrites the shard of the PDF that changed. `data.json` is written when settings or the index change.
+
+### Automatic migration
+
+On the first start after updating from a single-file version, the plugin:
+
+1. writes a copy of the old `data.json` to `data.json.v1.bak`,
+2. writes one shard per PDF, merging any existing shards,
+3. writes the new `data.json` with `version: 2` only after all shards were written.
+
+If a step fails, the old `data.json` is left untouched and the plugin keeps
+working in legacy mode; the migration is retried on the next start. The
+operation is idempotent, so an interrupted migration is safe. If `data.json` is
+lost or an older version overwrote it, the index is rebuilt from the `file`
+field inside the shard files.
 
 ## Technical notes
 
@@ -161,7 +195,9 @@ Obsidian does not expose a public API for its PDF viewer. The plugin accesses in
 - `.pdf-toolbar-right` as the anchor for the toolbar controls
 - events `pagesinit`, `pagerendered`, `scalechanging`, `rotationchanging`, and `resize`
 
-Markdown is rendered with `MarkdownRenderer.render()` and a view-scoped `Component`. The inline editor is a CodeMirror 6 `EditorView` using Obsidian's Markdown language facet and `editorLivePreviewField`; when the **LaTeX Suite** plugin is enabled, its registered editor extensions are added to the editor state. Because Obsidian's Live Preview decorations are only installed on Markdown views, the plugin adds its own decoration plugin for live formatting: it styles bold/italic/strikethrough/highlight/inline code, links, headings, and renders inline LaTeX with `renderMath`, while hiding the Markdown markers unless the cursor is inside the construct. Theme colours for bold, italic and headings are read from a hidden probe element that uses Obsidian's rendered-Markdown classes, so theme CSS applies unchanged. For burning, textboxes are rendered off-screen with the same CSS classes and captured as PNGs with `html2canvas`. `pdf-lib` creates a Form XObject appearance stream for each image and adds a `/Stamp` annotation to the page's `/Annots` array, plus one invisible `/Link` annotation per rendered link. The file is then overwritten via `vault.modifyBinary` and the burned entries are removed from `data.json`. The delete action in the annotation popup resolves the PDF.js annotation ID back to the PDF object and removes that annotation from `/Annots`.
+Markdown is rendered with `MarkdownRenderer.render()` and a view-scoped `Component`. Rendered HTML is cached by PDF path and text, so PDF.js discarding and recreating a page does not re-render every textbox. The inline editor is a CodeMirror 6 `EditorView` using Obsidian's Markdown language facet and `editorLivePreviewField`; when the **LaTeX Suite** plugin is enabled, its registered editor extensions are added to the editor state. Because Obsidian's Live Preview decorations are only installed on Markdown views, the plugin adds its own decoration plugin for live formatting: it styles bold/italic/strikethrough/highlight/inline code, links, headings, and renders inline LaTeX with `renderMath`, while hiding the Markdown markers unless the cursor is inside the construct. Theme colours for bold, italic and headings are read from a hidden probe element that uses Obsidian's rendered-Markdown classes, so theme CSS applies unchanged. For burning, textboxes are rendered off-screen with the same CSS classes and captured as PNGs with `html2canvas`. `pdf-lib` creates a Form XObject appearance stream for each image and adds a `/Stamp` annotation to the page's `/Annots` array, plus one invisible `/Link` annotation per rendered link. The file is then overwritten via `vault.modifyBinary` and the burned entries are removed from the PDF's shard.
+
+Annotations are indexed by PDF and page, so a render pass only touches the boxes on the pages that are currently in the DOM. Styles are only written when the geometry, colour, zoom or rotation actually changed, and every page is measured before any style is written to avoid forced layouts. The MutationObserver only watches direct `.page` changes; page renders, zoom and rotation come from PDF.js events.
 
 Coordinates are measured with `getBoundingClientRect()` on `.canvasWrapper`. That rectangle is already viewport-relative, so the PDF container's scroll offset is included; scale is derived from `viewport.width / pageView.scale` or `rect.width / baseWidth`.
 
@@ -171,8 +207,12 @@ All internal accesses are typed and optional so an Obsidian update does not imme
 
 ```bash
 npm install
-npm run dev      # Watch build
-npm run build    # Typecheck + production build
+npm run dev               # Watch build
+npm run build             # Typecheck + production build
+npm test                  # Geometry, migration and storage unit tests
+npm run bench             # Page-index benchmark (50k textboxes)
+npm run test-vault        # Build + create/refresh the Obsidian test vault
+npm run test-vault:reset  # Reset the test vault to the legacy migration state
 ```
 
 The release version must match in `package.json`, `manifest.json`, and `versions.json`.
@@ -197,6 +237,8 @@ The release version must match in `package.json`, `manifest.json`, and `versions
 - Link annotations are only written when burning. PDFs that were burned with an older version of the plugin do not contain link targets and cannot be made clickable retroactively; re-add the textbox and burn it again.
 - Burning stores textboxes as PDF Stamp annotations with image appearances; their text is not selectable, and the original PDF is overwritten.
 - Burned annotations can be removed later with a PDF annotation editor or directly in Obsidian via the trash button / **Delete** / **Backspace** when the annotation is focused. They are no longer managed by the textbox editor after burning.
-- Data lives per vault in `data.json`; it is only written into a PDF through the burn command.
+- Data lives per vault in `.obsidian/plugins/pdf-textbox/`; it is only written into a PDF through the burn command. Sync therefore depends on whether your vault sync includes plugin data (Git works if `.obsidian` is tracked; Obsidian Sync needs "Installed community plugins" enabled).
+- Downgrading to a version before the sharded storage means that version cannot see the textboxes. The data stays in `annotations/`; upgrading again rebuilds the index automatically. Do not run both versions on the same vault at the same time.
+- Rendered Markdown is cached per textbox text. If an embedded image or embed changes while a textbox is open, the box refreshes after its text changes or the PDF is reopened.
 - No device sync beyond normal vault synchronization.
 - Internal PDF.js structures can change with Obsidian updates.

@@ -1,11 +1,16 @@
 {
   "name": "pdf-textbox",
-  "version": "0.1.11",
+  "version": "0.2.0",
   "description": "Adds editable Markdown/LaTeX textboxes to Obsidian's native PDF viewer and can burn them into the PDF.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production"
+    "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
+    "test": "node scripts/test.mjs",
+    "bench": "node scripts/benchmark.mjs",
+    "test-vault": "npm run build && node scripts/create-test-vault.mjs",
+    "test-vault:reset": "npm run build && node scripts/create-test-vault.mjs --reset",
+    "test-vault:stress": "npm run build && node scripts/create-test-vault.mjs --stress --dir=test-vault-stress"
   },
   "keywords": [
     "obsidian",

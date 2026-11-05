@@ -3,3 +3,6 @@ main.js
 *.js.map
 data.json
 .DS_Store
+.test-build/
+test-vault/
+test-vault-stress/

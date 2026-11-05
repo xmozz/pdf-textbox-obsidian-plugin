@@ -41,7 +41,6 @@ import {
   editorLivePreviewField,
   finishRenderMath,
   loadMathJax,
-  normalizePath,
   renderMath,
   setIcon,
 } from "obsidian";
@@ -55,12 +54,32 @@ import {
   PDFRef,
   PDFString,
 } from "pdf-lib";
+import {
+  DEFAULT_SETTINGS,
+  clamp,
+  createId,
+  escapeSelectorValue,
+  finiteNumber,
+  hexToRgba,
+  normalizeHexColor,
+  normalizeRotation,
+  normalizeVaultPath,
+  readableColor,
+  rotateNormalizedRect,
+  textColorForBackground,
+  type PdfTextboxAnnotation,
+  type PdfTextboxSettings,
+  type ThemeMarkdownColors,
+} from "./src/core";
+import { PdfTextboxStore, type VaultFileSystem } from "./src/store";
+
+export type { PdfTextboxAnnotation, PdfTextboxSettings } from "./src/core";
+export { DEFAULT_SETTINGS } from "./src/core";
 
 /* -------------------------------------------------------------------------- */
 /*  Constants                                                                  */
 /* -------------------------------------------------------------------------- */
 
-const DATA_VERSION = 1;
 const PDF_VIEW_TYPE = "pdf";
 const PAGE_SELECTOR = ".page[data-page-number]";
 const TOOL_CLASS = "pdf-textbox-tool";
@@ -74,87 +93,11 @@ const EDIT_MODE_CLASS = "pdf-textbox-edit-mode";
 const CREATE_MODE_CLASS = "pdf-textbox-create-mode";
 const BURN_MODE_CLASS = "pdf-textbox-burning";
 const SAVE_DEBOUNCE_MS = 400;
-const DEFAULT_FONT_SIZE = 12;
 const MIN_HEIGHT_PDF = 24;
 const MAX_ATTACH_ATTEMPTS = 40;
 /** PDF.js viewports express CSS pixels; 1 PDF point = 96/72 CSS pixels. */
 const CSS_UNITS = 96 / 72;
-
-/* -------------------------------------------------------------------------- */
-/*  Data model                                                                 */
-/* -------------------------------------------------------------------------- */
-
-export interface PdfTextboxSettings {
-  /** Width of newly created textboxes, as a percentage of the page width. */
-  defaultWidthPercent: number;
-  /** Font size of newly created textboxes, in PDF points. */
-  defaultFontSize: number;
-  /** Background colour for every textbox, as a #rrggbb value. */
-  backgroundColor: string;
-  /** Background opacity, 0.05 - 1. */
-  backgroundColorOpacity: number;
-  /** Show the overwrite confirmation before burning into the PDF. */
-  confirmBeforeBurn: boolean;
-  /** Render Markdown/LaTeX while typing instead of only after leaving the editor. */
-  livePreviewWhileEditing: boolean;
-  /** Keep textbox edit mode enabled across PDF switches and restarts. */
-  editModeEnabled: boolean;
-}
-
-export const DEFAULT_SETTINGS: PdfTextboxSettings = {
-  defaultWidthPercent: 22,
-  defaultFontSize: DEFAULT_FONT_SIZE,
-  backgroundColor: "#ffd54f",
-  backgroundColorOpacity: 0.58,
-  confirmBeforeBurn: true,
-  livePreviewWhileEditing: true,
-  editModeEnabled: false,
-};
-
-/**
- * A textbox annotation.
- *
- * `x`, `y`, `width` and `height` are stored in PDF page units at scale 1
- * (not screen pixels) for the page rotation that was active when the box was
- * created. `nx`, `ny`, `nw` and `nh` are the same rectangle normalised to 0..1
- * and are what the overlay uses for rendering, so zooming cannot move a box.
- */
-export interface PdfTextboxAnnotation {
-  id: string;
-  file: string;
-  page: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  nx: number;
-  ny: number;
-  nw: number;
-  nh: number;
-  rotation: number;
-  text: string;
-  fontSize: number;
-  /** Per-textbox background colour (#rrggbb). */
-  color: string;
-  /** Whether the textbox is shown as a small icon until hovered. */
-  collapsed: boolean;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface PdfTextboxData {
-  version: number;
-  annotations: PdfTextboxAnnotation[];
-  settings: PdfTextboxSettings;
-}
-
-function createEmptyData(): PdfTextboxData {
-  return {
-    version: DATA_VERSION,
-    annotations: [],
-    settings: { ...DEFAULT_SETTINGS },
-  };
-}
+const MARKDOWN_CACHE_MAX_CHARS = 3_000_000;
 
 /* -------------------------------------------------------------------------- */
 /*  Minimal PDF.js/Obsidian internal types                                     */
@@ -294,356 +237,6 @@ interface PdfViewState {
   editorRequestId: number;
 }
 
-/* -------------------------------------------------------------------------- */
-/*  Geometry helpers                                                           */
-/* -------------------------------------------------------------------------- */
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
-function normalizeRotation(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  const snapped = Math.round(value / 90) * 90;
-  return ((snapped % 360) + 360) % 360;
-}
-
-/**
- * Rotates a normalised rectangle from one page rotation to another.
- * PDF.js rotations are clockwise, so a point (x, y) becomes (1 - y, x) for 90°.
- */
-function rotateNormalizedRect(
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  fromRotation: number,
-  toRotation: number,
-): { x: number; y: number; width: number; height: number } {
-  let rx = x;
-  let ry = y;
-  let rw = width;
-  let rh = height;
-
-  const steps =
-    ((normalizeRotation(toRotation) - normalizeRotation(fromRotation)) / 90 + 4) % 4;
-
-  for (let index = 0; index < steps; index += 1) {
-    const previousWidth = rw;
-    const nextX = 1 - (ry + rh);
-    const nextY = rx;
-    rw = rh;
-    rh = previousWidth;
-    rx = nextX;
-    ry = nextY;
-  }
-
-  return { x: rx, y: ry, width: rw, height: rh };
-}
-
-function baseSizeForRotation(
-  baseWidth: number,
-  baseHeight: number,
-  currentRotation: number,
-  targetRotation: number,
-): { width: number; height: number } {
-  const delta =
-    ((normalizeRotation(targetRotation) - normalizeRotation(currentRotation)) / 90 + 4) % 4;
-  return delta === 1 || delta === 3
-    ? { width: baseHeight, height: baseWidth }
-    : { width: baseWidth, height: baseHeight };
-}
-
-function createId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `textbox-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function finiteNumber(value: unknown, fallback: number): number {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric : fallback;
-}
-
-function normalizeHexColor(value: unknown): string {
-  if (typeof value !== "string") return DEFAULT_SETTINGS.backgroundColor;
-  let hex = value.trim();
-
-  if (!hex.startsWith("#")) hex = `#${hex}`;
-  if (/^#[0-9a-f]{3}$/i.test(hex)) {
-    const [red, green, blue] = hex.slice(1);
-    hex = `#${red}${red}${green}${green}${blue}${blue}`;
-  }
-
-  return /^#[0-9a-f]{6}$/i.test(hex)
-    ? hex.toLowerCase()
-    : DEFAULT_SETTINGS.backgroundColor;
-}
-
-function coerceSettings(raw: unknown): PdfTextboxSettings {
-  const source =
-    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-
-  return {
-    defaultWidthPercent: clamp(
-      finiteNumber(source.defaultWidthPercent, DEFAULT_SETTINGS.defaultWidthPercent),
-      5,
-      80,
-    ),
-    defaultFontSize: clamp(
-      finiteNumber(source.defaultFontSize, DEFAULT_SETTINGS.defaultFontSize),
-      6,
-      48,
-    ),
-    backgroundColor: normalizeHexColor(source.backgroundColor),
-    backgroundColorOpacity: clamp(
-      finiteNumber(
-        source.backgroundColorOpacity,
-        DEFAULT_SETTINGS.backgroundColorOpacity,
-      ),
-      0.05,
-      1,
-    ),
-    confirmBeforeBurn:
-      typeof source.confirmBeforeBurn === "boolean"
-        ? source.confirmBeforeBurn
-        : DEFAULT_SETTINGS.confirmBeforeBurn,
-    livePreviewWhileEditing:
-      typeof source.livePreviewWhileEditing === "boolean"
-        ? source.livePreviewWhileEditing
-        : DEFAULT_SETTINGS.livePreviewWhileEditing,
-    editModeEnabled:
-      typeof source.editModeEnabled === "boolean"
-        ? source.editModeEnabled
-        : DEFAULT_SETTINGS.editModeEnabled,
-  };
-}
-
-function hexToRgba(hex: string, alpha: number): string {
-  const normalized = normalizeHexColor(hex);
-  const value = Number.parseInt(normalized.slice(1), 16);
-  const red = (value >> 16) & 255;
-  const green = (value >> 8) & 255;
-  const blue = value & 255;
-  return `rgba(${red}, ${green}, ${blue}, ${clamp(alpha, 0, 1)})`;
-}
-
-/** Picks black or white text so the label stays readable on any background. */
-function textColorForBackground(hex: string): string {
-  const normalized = normalizeHexColor(hex);
-  const value = Number.parseInt(normalized.slice(1), 16);
-  const red = (value >> 16) & 255;
-  const green = (value >> 8) & 255;
-  const blue = value & 255;
-  const luminance = (0.299 * red + 0.587 * green + 0.114 * blue) / 255;
-  return luminance > 0.6 ? "#1c1c1c" : "#ffffff";
-}
-
-interface RgbColor {
-  r: number;
-  g: number;
-  b: number;
-}
-
-/** Parses hex/rgb/rgba and, as a fallback, any colour the browser understands. */
-function parseColor(value: string): RgbColor | null {
-  const text = value.trim();
-  if (!text) return null;
-
-  const hex = /^#([0-9a-f]{3,8})$/i.exec(text);
-  if (hex) {
-    const digits = hex[1] ?? "";
-    const expand = (part: string): number =>
-      Number.parseInt(part.length === 1 ? part + part : part, 16);
-    if (digits.length === 3 || digits.length === 4) {
-      return {
-        r: expand(digits.charAt(0)),
-        g: expand(digits.charAt(1)),
-        b: expand(digits.charAt(2)),
-      };
-    }
-    if (digits.length === 6 || digits.length === 8) {
-      return {
-        r: Number.parseInt(digits.slice(0, 2), 16),
-        g: Number.parseInt(digits.slice(2, 4), 16),
-        b: Number.parseInt(digits.slice(4, 6), 16),
-      };
-    }
-  }
-
-  const rgb = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i.exec(text);
-  if (rgb) {
-    return { r: Number(rgb[1]), g: Number(rgb[2]), b: Number(rgb[3]) };
-  }
-
-  // Themed colours can be oklch()/lab()/named colours. Let the browser
-  // normalise those to #rrggbb instead of guessing.
-  try {
-    if (typeof document === "undefined") return null;
-    const context = document.createElement("canvas").getContext("2d");
-    if (!context) return null;
-    const sentinel = "#010203";
-    context.fillStyle = sentinel;
-    context.fillStyle = text;
-    const normalized = context.fillStyle;
-    const lower = text.toLowerCase();
-    if (
-      typeof normalized !== "string" ||
-      (normalized === sentinel && lower !== sentinel && lower !== "black")
-    ) {
-      return null;
-    }
-    // The canvas getter can also echo modern colour spaces back verbatim;
-    // only recurse for formats the regex above understands.
-    if (!/^(#|rgba?\()/i.test(normalized)) return null;
-    return parseColor(normalized);
-  } catch {
-    return null;
-  }
-}
-
-function relativeLuminance(color: RgbColor): number {
-  const channel = (value: number): number => {
-    const normalized = value / 255;
-    return normalized <= 0.03928
-      ? normalized / 12.92
-      : Math.pow((normalized + 0.055) / 1.055, 2.4);
-  };
-  return (
-    0.2126 * channel(color.r) +
-    0.7152 * channel(color.g) +
-    0.0722 * channel(color.b)
-  );
-}
-
-function contrastRatio(first: RgbColor, second: RgbColor): number {
-  const a = relativeLuminance(first);
-  const b = relativeLuminance(second);
-  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
-}
-
-/**
- * Keeps a theme colour when it is readable on the textbox background and
- * falls back to the high-contrast black/white text colour otherwise.
- */
-function readableColor(
-  candidate: string,
-  background: string,
-  fallback: string,
-  minRatio: number,
-): string {
-  const candidateRgb = parseColor(candidate);
-  const backgroundRgb = parseColor(background);
-  const fallbackRgb = parseColor(fallback);
-  if (!candidateRgb || !backgroundRgb) return fallback;
-
-  if (contrastRatio(candidateRgb, backgroundRgb) >= minRatio) {
-    return candidate;
-  }
-
-  // The theme colour is not readable on this background on its own. Instead of
-  // discarding it entirely, blend it toward the high-contrast fallback so the
-  // hue survives while the text stays legible.
-  if (!fallbackRgb) return fallback;
-  for (let step = 1; step <= 10; step += 1) {
-    const amount = step / 10;
-    const blended: RgbColor = {
-      r: Math.round(candidateRgb.r * (1 - amount) + fallbackRgb.r * amount),
-      g: Math.round(candidateRgb.g * (1 - amount) + fallbackRgb.g * amount),
-      b: Math.round(candidateRgb.b * (1 - amount) + fallbackRgb.b * amount),
-    };
-    if (contrastRatio(blended, backgroundRgb) >= minRatio) {
-      return rgbToHex(blended);
-    }
-  }
-
-  return fallback;
-}
-
-function rgbToHex(color: RgbColor): string {
-  const toHex = (value: number): string =>
-    Math.max(0, Math.min(255, Math.round(value)))
-      .toString(16)
-      .padStart(2, "0");
-  return `#${toHex(color.r)}${toHex(color.g)}${toHex(color.b)}`;
-}
-
-interface ThemeMarkdownColors {
-  strong: string;
-  em: string;
-  /** Computed colour for h1 … h6. */
-  headings: string[];
-}
-
-function escapeSelectorValue(value: string): string {
-  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
-    return CSS.escape(value);
-  }
-  return value.replace(/["\\]/g, "\\$&");
-}
-
-function coerceAnnotation(
-  raw: unknown,
-  fallbackColor = DEFAULT_SETTINGS.backgroundColor,
-): PdfTextboxAnnotation | null {
-  if (!raw || typeof raw !== "object") return null;
-  const source = raw as Record<string, unknown>;
-
-  if (typeof source.file !== "string" || source.file.trim().length === 0) return null;
-  const page = Math.floor(finiteNumber(source.page, 0));
-  if (page < 1) return null;
-
-  const nx = finiteNumber(source.nx, Number.NaN);
-  const ny = finiteNumber(source.ny, Number.NaN);
-  const nw = finiteNumber(source.nw, Number.NaN);
-  const nh = finiteNumber(source.nh, Number.NaN);
-  if (![nx, ny, nw, nh].every(Number.isFinite)) return null;
-
-  const safeWidth = clamp(nw, 0.02, 1);
-  const safeHeight = clamp(nh, 0.005, 1);
-  const safeX = clamp(nx, 0, Math.max(0, 1 - safeWidth));
-  const safeY = clamp(ny, 0, Math.max(0, 1 - safeHeight));
-
-  return {
-    id: typeof source.id === "string" && source.id.length > 0 ? source.id : createId(),
-    file: normalizePath(source.file),
-    page,
-    x: finiteNumber(source.x, 0),
-    y: finiteNumber(source.y, 0),
-    width: Math.max(1, finiteNumber(source.width, 100)),
-    height: Math.max(1, finiteNumber(source.height, 20)),
-    nx: safeX,
-    ny: safeY,
-    nw: safeWidth,
-    nh: safeHeight,
-    rotation: normalizeRotation(finiteNumber(source.rotation, 0)),
-    text: typeof source.text === "string" ? source.text : "",
-    fontSize: clamp(finiteNumber(source.fontSize, DEFAULT_FONT_SIZE), 6, 96),
-    color: normalizeHexColor(source.color ?? fallbackColor),
-    collapsed: source.collapsed === true,
-    createdAt: finiteNumber(source.createdAt, Date.now()),
-    updatedAt: finiteNumber(source.updatedAt, Date.now()),
-  };
-}
-
-function coerceData(raw: unknown): PdfTextboxData {
-  if (!raw || typeof raw !== "object") return createEmptyData();
-  const source = raw as Record<string, unknown>;
-  const settings = coerceSettings(source.settings);
-  const annotations = Array.isArray(source.annotations)
-    ? source.annotations
-        .map((entry) => coerceAnnotation(entry, settings.backgroundColor))
-        .filter((entry): entry is PdfTextboxAnnotation => entry !== null)
-    : [];
-
-  return {
-    version: DATA_VERSION,
-    annotations,
-    settings,
-  };
-}
-
 /**
  * Finds the internal PDF component. The public view is a thin wrapper in
  * recent Obsidian versions; older versions expose `pdfViewer` directly.
@@ -673,7 +266,7 @@ function resolvePdfHost(view: PdfView): ResolvedPdfHost | null {
       host: candidate,
       pdfViewer,
       rootEl,
-      filePath: filePath ? normalizePath(filePath) : "",
+      filePath: filePath ? normalizeVaultPath(filePath) : "",
     };
   }
 
@@ -772,7 +365,9 @@ class TextboxMathWidget extends WidgetType {
       const element = renderMath(this.source, this.displayMode);
       element.classList.add("pdf-textbox-live-math");
       if (this.isBlock) element.classList.add("is-block");
-      void finishRenderMath().catch(() => undefined);
+      void finishRenderMath().catch((error) => {
+        console.warn("PDF Textbox: MathJax finish pass failed", error);
+      });
       return element;
     } catch (error) {
       // Invalid LaTeX must not break the editor; fall back to the source.
@@ -1120,12 +715,13 @@ class BurnModal extends Modal {
 /* -------------------------------------------------------------------------- */
 
 export default class PdfTextboxPlugin extends Plugin {
-  private data: PdfTextboxData = createEmptyData();
+  private store!: PdfTextboxStore;
   private readonly states = new Map<WorkspaceLeaf, PdfViewState>();
   private readonly retryTimers = new Map<WorkspaceLeaf, number>();
   private saveTimer: number | null = null;
   private syncTimer: number | null = null;
   private saveRetryCount = 0;
+  private saveFailureNotified = false;
   private saveQueue: Promise<void> = Promise.resolve();
   private dirty = false;
   private disposed = false;
@@ -1135,13 +731,25 @@ export default class PdfTextboxPlugin extends Plugin {
   private markdownLanguagePromise: Promise<Extension | null> | null = null;
   /** Cached theme colours per document; cleared when the theme changes. */
   private themeColors = new WeakMap<Document, ThemeMarkdownColors>();
+  /** Readable theme colours per document and textbox background. */
+  private themeVarCache = new WeakMap<
+    Document,
+    Map<string, ThemeMarkdownColors>
+  >();
+  /** Last geometry key per textbox element, so unchanged boxes are not restyled. */
+  private styleCache = new WeakMap<HTMLElement, string>();
+  /** Rendered Markdown HTML keyed by PDF path + text, so page recycling is cheap. */
+  private markdownCache = new Map<string, string>();
+  private markdownCacheChars = 0;
+  /** Local settings snapshot; updated whenever the store settings change. */
+  private currentSettings: PdfTextboxSettings = { ...DEFAULT_SETTINGS };
 
   async onload(): Promise<void> {
     await this.loadStore();
 
     this.registerEvent(
       this.app.workspace.on("css-change", () => {
-        this.themeColors = new WeakMap();
+        this.invalidateStyleCaches();
         for (const state of this.states.values()) this.renderAll(state);
       }),
     );
@@ -1217,19 +825,56 @@ export default class PdfTextboxPlugin extends Plugin {
   /* ------------------------------ persistence ----------------------------- */
 
   private async loadStore(): Promise<void> {
-    const raw: unknown = await this.loadData();
-    this.data = coerceData(raw);
+    const pluginDir =
+      this.manifest.dir ??
+      `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+    this.store = new PdfTextboxStore({
+      fs: this.app.vault.adapter as unknown as VaultFileSystem,
+      pluginDir,
+      loadData: () => this.loadData(),
+      saveData: (data) => this.saveData(data),
+      notify: (message, timeout) => new Notice(message, timeout ?? 6000),
+    });
+
+    const status = await this.store.initialize();
+    this.currentSettings = this.store.getSettings();
+    for (const warning of status.warnings) {
+      console.warn("PDF Textbox:", warning);
+    }
+
+    if (status.legacy) {
+      new Notice(
+        "PDF Textbox: automatic storage migration failed. Your textboxes are safe in data.json; the plugin will retry on the next start.",
+        10000,
+      );
+    } else if (status.migrated) {
+      new Notice(
+        "PDF Textbox: textbox storage was updated automatically.",
+        6000,
+      );
+    }
   }
 
   /** Called by the settings tab; applies immediately and persists. */
   setSettings(patch: Partial<PdfTextboxSettings>): void {
-    this.data.settings = coerceSettings({ ...this.data.settings, ...patch });
+    this.store.setSettings(patch);
+    this.currentSettings = this.store.getSettings();
+    this.invalidateStyleCaches();
     this.requestSave();
-    for (const state of this.states.values()) this.renderAll(state);
+    for (const state of this.states.values()) {
+      this.ensureToolbar(state);
+      this.renderAll(state);
+    }
   }
 
   getSettings(): PdfTextboxSettings {
-    return { ...this.data.settings };
+    return { ...this.currentSettings };
+  }
+
+  private invalidateStyleCaches(): void {
+    this.themeColors = new WeakMap();
+    this.themeVarCache = new WeakMap();
+    this.styleCache = new WeakMap();
   }
 
   private requestSave(): void {
@@ -1245,29 +890,27 @@ export default class PdfTextboxPlugin extends Plugin {
   }
 
   private async flushSave(): Promise<void> {
-    if (!this.dirty) return;
+    if (!this.dirty && !this.store.hasDirty()) return;
     this.dirty = false;
-
-    const snapshot: PdfTextboxData = {
-      version: DATA_VERSION,
-      annotations: this.data.annotations
-        .filter((annotation) => annotation.text.trim().length > 0)
-        .map((annotation) => ({ ...annotation })),
-      settings: { ...this.data.settings },
-    };
 
     this.saveQueue = this.saveQueue
       .catch((error) => {
         console.error("PDF Textbox: previous save failed", error);
       })
-      .then(() => this.saveData(snapshot));
+      .then(() => this.store.flush());
 
     try {
       await this.saveQueue;
       this.saveRetryCount = 0;
+      this.saveFailureNotified = false;
     } catch (error) {
       this.dirty = true;
-      console.error("PDF Textbox: could not save data.json", error);
+      this.reportError(
+        "could not save textbox data",
+        error,
+        !this.saveFailureNotified,
+      );
+      this.saveFailureNotified = true;
       this.scheduleSaveRetry();
     }
   }
@@ -1282,53 +925,48 @@ export default class PdfTextboxPlugin extends Plugin {
     }, delay);
   }
 
-  private onFileRenamed(file: TAbstractFile, oldPath: string): void {
-    const normalizedOldPath = normalizePath(oldPath);
-    const newPath = normalizePath(file.path);
-    const isFolder = file instanceof TFolder;
-    let changed = false;
-
-    for (const annotation of this.data.annotations) {
-      if (isFolder) {
-        if (
-          annotation.file === normalizedOldPath ||
-          annotation.file.startsWith(`${normalizedOldPath}/`)
-        ) {
-          annotation.file =
-            newPath + annotation.file.slice(normalizedOldPath.length);
-          annotation.updatedAt = Date.now();
-          changed = true;
-        }
-      } else if (annotation.file === normalizedOldPath) {
-        annotation.file = newPath;
-        annotation.updatedAt = Date.now();
-        changed = true;
-      }
-    }
-
-    if (changed) {
-      this.requestSave();
-      this.scheduleSync(0);
+  /** Logs an error and optionally shows it to the user (Q2). */
+  private reportError(
+    context: string,
+    error: unknown,
+    userVisible = false,
+  ): void {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`PDF Textbox: ${context}`, error);
+    if (userVisible) {
+      new Notice(`PDF Textbox: ${context} (${message})`, 8000);
     }
   }
 
-  private onFileDeleted(file: TAbstractFile): void {
-    const path = normalizePath(file.path);
+  private onFileRenamed(file: TAbstractFile, oldPath: string): void {
+    const normalizedOldPath = normalizeVaultPath(oldPath);
+    const newPath = normalizeVaultPath(file.path);
     const isFolder = file instanceof TFolder;
-    const previousLength = this.data.annotations.length;
-    this.data.annotations = this.data.annotations.filter((annotation) => {
-      if (isFolder) {
-        return !(
-          annotation.file === path || annotation.file.startsWith(`${path}/`)
-        );
-      }
-      return annotation.file !== path;
-    });
 
-    if (this.data.annotations.length !== previousLength) {
-      this.requestSave();
-      this.scheduleSync(0);
-    }
+    void this.store
+      .renameFile(normalizedOldPath, newPath, isFolder)
+      .then(() => {
+        this.requestSave();
+        this.scheduleSync(0);
+      })
+      .catch((error) => {
+        this.reportError("could not update textbox paths after a rename", error, true);
+      });
+  }
+
+  private onFileDeleted(file: TAbstractFile): void {
+    const path = normalizeVaultPath(file.path);
+    const isFolder = file instanceof TFolder;
+
+    void this.store
+      .deleteFile(path, isFolder)
+      .then(() => {
+        this.requestSave();
+        this.scheduleSync(0);
+      })
+      .catch((error) => {
+        this.reportError("could not delete textbox data", error, true);
+      });
   }
 
   /* --------------------------- workspace wiring --------------------------- */
@@ -1409,9 +1047,28 @@ export default class PdfTextboxPlugin extends Plugin {
         existing.host !== host ||
         existing.pdfViewer !== pdfViewer ||
         existing.viewerContainerEl !== viewerContainerEl ||
-        existing.viewerEl !== viewerEl)
+        existing.viewerEl !== viewerEl ||
+        existing.filePath !== filePath)
     ) {
       this.destroyState(existing);
+    }
+
+    // The shard for a PDF is loaded on demand. Wait for it before creating the
+    // overlay state so a new textbox can never race an in-flight load.
+    if (filePath && !this.store.isLoaded(filePath)) {
+      void this.store
+        .ensureLoaded(filePath)
+        .then(() => {
+          if (!this.disposed) this.tryAttach(leaf, 0);
+        })
+        .catch((error) => {
+          this.reportError(
+            `could not load textboxes for ${filePath}`,
+            error,
+            true,
+          );
+        });
+      return;
     }
 
     let state = this.states.get(leaf);
@@ -1429,10 +1086,7 @@ export default class PdfTextboxPlugin extends Plugin {
       );
       this.states.set(leaf, state);
     } else {
-      if (state.filePath !== filePath) {
-        if (state.editing) this.commitEditing(state);
-        state.filePath = filePath;
-      }
+      if (state.editing) this.commitEditing(state);
       state.viewerContainerEl = viewerContainerEl;
       state.viewerEl = viewerEl;
     }
@@ -1464,7 +1118,7 @@ export default class PdfTextboxPlugin extends Plugin {
       pdfViewer,
       eventBus: pdfViewer.eventBus ?? host.eventBus ?? null,
       filePath,
-      editMode: this.data.settings.editModeEnabled,
+      editMode: this.currentSettings.editModeEnabled,
       createMode: false,
       component,
       createButton: null,
@@ -1716,7 +1370,9 @@ export default class PdfTextboxPlugin extends Plugin {
     const Observer = ownerDocument.defaultView?.MutationObserver;
     if (Observer) {
       const observer = new Observer(() => this.scheduleRenderAll(state));
-      observer.observe(viewerEl, { childList: true, subtree: true });
+      // Only watch direct children of `.pdfViewer` (page add/remove). Watching
+      // the whole subtree made every PDF.js render pass trigger another one.
+      observer.observe(viewerEl, { childList: true });
       state.observer = observer;
       state.cleanups.push(() => observer.disconnect());
 
@@ -1787,6 +1443,7 @@ export default class PdfTextboxPlugin extends Plugin {
       }
     }
 
+    if (filePath) this.store.acquire(filePath);
     return state;
   }
 
@@ -1840,6 +1497,15 @@ export default class PdfTextboxPlugin extends Plugin {
       .querySelectorAll<HTMLElement>(`.${LAYER_CLASS}`)
       .forEach((layer) => layer.remove());
     state.component.unload();
+
+    if (state.filePath) {
+      void this.store.release(state.filePath).catch((error) => {
+        this.reportError(
+          `could not release textbox data for ${state.filePath}`,
+          error,
+        );
+      });
+    }
   }
 
   private async dispose(): Promise<void> {
@@ -1878,6 +1544,7 @@ export default class PdfTextboxPlugin extends Plugin {
   private ensureToolbar(state: PdfViewState): void {
     // There are two elements with `.pdf-toolbar`: the real toolbar and the
     // hidden find bar. Anchoring on `.pdf-toolbar-right` avoids the find bar.
+    const settings = this.currentSettings;
     const host =
       state.rootEl.querySelector<HTMLElement>(".pdf-toolbar-right") ??
       state.rootEl.querySelector<HTMLElement>(".pdf-toolbar-left");
@@ -1958,7 +1625,7 @@ export default class PdfTextboxPlugin extends Plugin {
     } else if (colorButton.parentElement !== host) {
       host.appendChild(colorButton);
     }
-    colorButton.value = this.data.settings.backgroundColor;
+    colorButton.value = settings.backgroundColor;
     state.colorButton = colorButton;
 
     let sizeButton = toolbar.querySelector<HTMLSelectElement>(
@@ -1988,7 +1655,7 @@ export default class PdfTextboxPlugin extends Plugin {
       host.appendChild(sizeButton);
     }
 
-    const currentSize = String(this.data.settings.defaultFontSize);
+    const currentSize = String(settings.defaultFontSize);
     if (
       !Array.from(sizeButton.options).some(
         (option) => option.value === currentSize,
@@ -2005,6 +1672,19 @@ export default class PdfTextboxPlugin extends Plugin {
     state.sizeButton = sizeButton;
   }
 
+  /** Rebuilds the toolbar only when Obsidian removed our controls. */
+  private ensureToolbarIfNeeded(state: PdfViewState): void {
+    if (
+      state.createButton?.isConnected &&
+      state.editButton?.isConnected &&
+      state.colorButton?.isConnected &&
+      state.sizeButton?.isConnected
+    ) {
+      return;
+    }
+    this.ensureToolbar(state);
+  }
+
   private setEditMode(
     state: PdfViewState,
     enabled: boolean,
@@ -2019,7 +1699,8 @@ export default class PdfTextboxPlugin extends Plugin {
 
     if (!persist) return;
 
-    this.data.settings.editModeEnabled = enabled;
+    this.store.setSettings({ editModeEnabled: enabled });
+    this.currentSettings.editModeEnabled = enabled;
     this.requestSave();
 
     for (const otherState of this.states.values()) {
@@ -2223,7 +1904,8 @@ export default class PdfTextboxPlugin extends Plugin {
     if (!metrics) return false;
 
     const point = this.screenToPagePoint(clientX, clientY, pageEl, metrics);
-    const widthPercent = clamp(this.data.settings.defaultWidthPercent, 5, 80);
+    const settings = this.currentSettings;
+    const widthPercent = clamp(settings.defaultWidthPercent, 5, 80);
     const width = clamp(
       (metrics.baseWidth * widthPercent) / 100,
       Math.min(24, metrics.baseWidth),
@@ -2273,23 +1955,20 @@ export default class PdfTextboxPlugin extends Plugin {
     );
     const safeX = clamp(x, 0, Math.max(0, metrics.baseWidth - safeWidth));
     const safeY = clamp(y, 0, Math.max(0, metrics.baseHeight - safeHeight));
+    const settings = this.currentSettings;
 
     const annotation: PdfTextboxAnnotation = {
       id: createId(),
       file: state.filePath,
       page: metrics.pageNumber,
-      x: safeX,
-      y: safeY,
-      width: safeWidth,
-      height: safeHeight,
       nx: safeX / metrics.baseWidth,
       ny: safeY / metrics.baseHeight,
       nw: safeWidth / metrics.baseWidth,
       nh: safeHeight / metrics.baseHeight,
       rotation: metrics.rotation,
       text: "",
-      fontSize: this.data.settings.defaultFontSize,
-      color: this.data.settings.backgroundColor,
+      fontSize: settings.defaultFontSize,
+      color: settings.backgroundColor,
       collapsed: false,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -2387,6 +2066,7 @@ export default class PdfTextboxPlugin extends Plugin {
       annotation.collapsed = true;
       annotation.updatedAt = Date.now();
       this.applyCollapsedState(element, annotation);
+      this.store.touch(state.filePath);
       this.requestSave();
     });
 
@@ -2401,6 +2081,7 @@ export default class PdfTextboxPlugin extends Plugin {
       annotation.collapsed = false;
       annotation.updatedAt = Date.now();
       this.applyCollapsedState(element, annotation);
+      this.store.touch(state.filePath);
       this.requestSave();
     });
 
@@ -2542,10 +2223,8 @@ export default class PdfTextboxPlugin extends Plugin {
       const width = clamp(elementWidth / pageRect.width, 0.02, 1);
       const height = clamp(elementHeight / pageRect.height, 0.005, 1);
 
-      annotation.page = metrics.pageNumber;
-      // The box is now positioned in the target page's display coordinate
-      // system, so store its coordinates for that rotation directly.
       annotation.rotation = metrics.rotation;
+      this.store.moveToPage(annotation, metrics.pageNumber);
       annotation.nw = width;
       annotation.nh = height;
       annotation.nx = clamp(
@@ -2570,17 +2249,17 @@ export default class PdfTextboxPlugin extends Plugin {
 
       const metrics = this.getPageMetrics(state, currentPageEl);
       if (metrics) {
-        annotation.page = metrics.pageNumber;
+        this.store.moveToPage(annotation, metrics.pageNumber);
         annotation.rotation = metrics.rotation;
         annotation.nw = clamp(annotation.nw, 0.02, 1);
         annotation.nh = clamp(annotation.nh, 0.005, 1);
         annotation.nx = clamp(annotation.nx, 0, Math.max(0, 1 - annotation.nw));
         annotation.ny = clamp(annotation.ny, 0, Math.max(0, 1 - annotation.nh));
-        this.updatePdfCoordinates(annotation, metrics);
         this.applyAnnotationGeometry(element, annotation, metrics);
       }
 
       annotation.updatedAt = Date.now();
+      this.store.touch(state.filePath);
       this.requestSave();
       this.renderAll(state);
     };
@@ -2658,8 +2337,8 @@ export default class PdfTextboxPlugin extends Plugin {
       ownerDocument.removeEventListener("pointercancel", onUp);
       element.classList.remove("is-resizing");
       this.updateNormalizedRectFromElement(annotation, element, pageEl, metrics);
-      this.updatePdfCoordinates(annotation, metrics);
       annotation.updatedAt = Date.now();
+      this.store.touch(state.filePath);
       this.requestSave();
     };
 
@@ -2682,7 +2361,11 @@ export default class PdfTextboxPlugin extends Plugin {
       pageEl,
       isNew,
     ).catch((error) => {
-      console.error("PDF Textbox: could not open the textbox editor", error);
+      this.reportError(
+        "could not open the textbox editor",
+        error,
+        true,
+      );
     });
   }
 
@@ -2714,6 +2397,7 @@ export default class PdfTextboxPlugin extends Plugin {
       annotation.collapsed = false;
       annotation.updatedAt = Date.now();
       this.applyCollapsedState(element, annotation);
+      this.store.touch(state.filePath);
       this.requestSave();
     }
 
@@ -2832,10 +2516,12 @@ export default class PdfTextboxPlugin extends Plugin {
       keymap.of([...defaultKeymap, ...historyKeymap]),
     );
 
-    if (this.data.settings.livePreviewWhileEditing) {
+    if (this.currentSettings.livePreviewWhileEditing) {
       extensions.push(liveFormattingExtension);
       // Inline LaTeX needs MathJax; loading it is idempotent and lazy.
-      void loadMathJax().catch(() => undefined);
+      void loadMathJax().catch((error) => {
+        console.warn("PDF Textbox: MathJax could not be loaded", error);
+      });
     }
     extensions.push(wrapSelectionExtension);
 
@@ -3275,17 +2961,11 @@ export default class PdfTextboxPlugin extends Plugin {
         annotation.ny = original.ny;
         annotation.nw = original.nw;
         annotation.nh = original.nh;
-        if (metrics) this.updatePdfCoordinates(annotation, metrics);
       }
     } else if (value.trim().length === 0) {
       if (!isNew) {
-        const index = this.data.annotations.findIndex(
-          (entry) => entry.id === annotation.id,
-        );
-        if (index >= 0) {
-          this.data.annotations.splice(index, 1);
-          this.requestSave();
-        }
+        this.store.remove(state.filePath, annotation.id);
+        this.requestSave();
       }
     } else {
       annotation.text = value;
@@ -3317,11 +2997,14 @@ export default class PdfTextboxPlugin extends Plugin {
         annotation.nh = clamp(back.height, 0.005, 1);
         annotation.nx = clamp(back.x, 0, Math.max(0, 1 - annotation.nw));
         annotation.ny = clamp(back.y, 0, Math.max(0, 1 - annotation.nh));
-        this.updatePdfCoordinates(annotation, metrics);
       }
 
       annotation.updatedAt = Date.now();
-      if (isNew) this.data.annotations.push(annotation);
+      if (isNew) {
+        this.store.add(state.filePath, annotation);
+      } else {
+        this.store.touch(state.filePath);
+      }
       this.requestSave();
     }
 
@@ -3347,19 +3030,14 @@ export default class PdfTextboxPlugin extends Plugin {
     );
     element?.remove();
 
-    const index = this.data.annotations.findIndex((entry) => entry.id === id);
-    if (index >= 0) {
-      this.data.annotations.splice(index, 1);
-      this.requestSave();
-    }
+    const removed = this.store.remove(state.filePath, id);
+    if (removed) this.requestSave();
 
     this.renderAll(state);
   }
 
   private confirmClearCurrentPdf(state: PdfViewState): void {
-    const count = this.data.annotations.filter(
-      (annotation) => annotation.file === state.filePath,
-    ).length;
+    const count = this.store.countForFile(state.filePath);
 
     if (count === 0) {
       new Notice("This PDF contains no textboxes.");
@@ -3370,9 +3048,7 @@ export default class PdfTextboxPlugin extends Plugin {
       this.app,
       `Remove ${count} textbox${count === 1 ? "" : "es"} from this PDF?`,
       () => {
-        this.data.annotations = this.data.annotations.filter(
-          (annotation) => annotation.file !== state.filePath,
-        );
+        this.store.removeForFile(state.filePath);
         this.requestSave();
         for (const otherState of this.states.values()) {
           if (otherState.filePath === state.filePath) this.renderAll(otherState);
@@ -3387,10 +3063,7 @@ export default class PdfTextboxPlugin extends Plugin {
   private confirmBurnCurrentPdf(state: PdfViewState): void {
     if (state.editing) this.commitEditing(state);
 
-    const count = this.data.annotations.filter(
-      (annotation) =>
-        annotation.file === state.filePath && annotation.text.trim().length > 0,
-    ).length;
+    const count = this.store.countForFile(state.filePath);
 
     if (count === 0) {
       new Notice("This PDF contains no textboxes.");
@@ -3402,7 +3075,7 @@ export default class PdfTextboxPlugin extends Plugin {
       void this.burnCurrentPdf(state.filePath);
     };
 
-    if (this.data.settings.confirmBeforeBurn) {
+    if (this.currentSettings.confirmBeforeBurn) {
       new BurnModal(this.app, count, run).open();
     } else {
       run(false);
@@ -3424,7 +3097,7 @@ export default class PdfTextboxPlugin extends Plugin {
       void this.burnCurrentPdf(state.filePath, [annotation]);
     };
 
-    if (this.data.settings.confirmBeforeBurn) {
+    if (this.currentSettings.confirmBeforeBurn) {
       new BurnModal(this.app, 1, run).open();
     } else {
       run(false);
@@ -3440,7 +3113,7 @@ export default class PdfTextboxPlugin extends Plugin {
       return;
     }
 
-    const annotations = (only ?? this.data.annotations).filter(
+    const annotations = (only ?? this.store.allForFile(filePath)).filter(
       (annotation) =>
         annotation.file === filePath && annotation.text.trim().length > 0,
     );
@@ -3454,8 +3127,8 @@ export default class PdfTextboxPlugin extends Plugin {
     const lockedStates = [...this.states.values()].filter(
       (state) => state.filePath === filePath,
     );
-    const fileAnnotationSnapshot = this.data.annotations
-      .filter((annotation) => annotation.file === filePath)
+    const fileAnnotationSnapshot = this.store
+      .allForFile(filePath)
       .map((annotation) => ({ ...annotation }));
     const progress = new Notice("Burning textboxes into the PDF…", 0);
 
@@ -3657,9 +3330,7 @@ export default class PdfTextboxPlugin extends Plugin {
         bytes.byteOffset,
         bytes.byteOffset + bytes.byteLength,
       ) as ArrayBuffer;
-      const currentFileAnnotations = this.data.annotations.filter(
-        (annotation) => annotation.file === filePath,
-      );
+      const currentFileAnnotations = this.store.allForFile(filePath);
       if (
         JSON.stringify(currentFileAnnotations) !==
         JSON.stringify(fileAnnotationSnapshot)
@@ -3681,10 +3352,7 @@ export default class PdfTextboxPlugin extends Plugin {
       // The burned textboxes are now part of the PDF. Remove only the
       // annotations that were actually baked so the same boxes do not appear
       // twice on top of the replaced file.
-      this.data.annotations = this.data.annotations.filter(
-        (annotation) =>
-          annotation.file !== filePath || !burnedIds.has(annotation.id),
-      );
+      this.store.removeMany(filePath, burnedIds);
       this.dirty = true;
       await this.flushSave();
 
@@ -3749,7 +3417,7 @@ export default class PdfTextboxPlugin extends Plugin {
     element.style.borderRadius = "3px";
     element.style.backgroundColor = hexToRgba(
       color,
-      this.data.settings.backgroundColorOpacity,
+      this.currentSettings.backgroundColorOpacity,
     );
     element.style.color = textColorForBackground(color);
     this.applyThemeTextColors(element, color);
@@ -4158,28 +3826,63 @@ export default class PdfTextboxPlugin extends Plugin {
 
   private renderAll(state: PdfViewState): void {
     if (this.states.get(state.leaf) !== state || this.disposed) return;
+    if (state.filePath && !this.store.isLoaded(state.filePath)) return;
 
-    this.ensureToolbar(state);
+    this.ensureToolbarIfNeeded(state);
 
-    const pages = state.viewerEl.querySelectorAll<HTMLElement>(PAGE_SELECTOR);
-    pages.forEach((pageEl) => this.renderPage(state, pageEl));
+    // Read every page measurement before writing any style. Interleaving the
+    // two forces a synchronous layout per page. Pages without textboxes are
+    // skipped entirely, so their layout is never measured.
+    const prepared: Array<{ pageEl: HTMLElement; metrics: PdfPageMetrics }> = [];
+    for (const pageEl of Array.from(
+      state.viewerEl.querySelectorAll<HTMLElement>(PAGE_SELECTOR),
+    )) {
+      const pageNumber = Number(pageEl.dataset.pageNumber);
+      if (!Number.isFinite(pageNumber)) continue;
+
+      const hasAnnotations =
+        this.store.annotationsForPage(state.filePath, pageNumber).length > 0;
+      const isEditingPage = state.editing?.pageNumber === pageNumber;
+      const hasLayer = Array.from(pageEl.children).some(
+        (child) =>
+          child.nodeType === 1 &&
+          (child as HTMLElement).classList.contains(LAYER_CLASS),
+      );
+      if (!hasAnnotations && !isEditingPage && !hasLayer) continue;
+
+      const metrics = this.getPageMetrics(state, pageEl);
+      if (metrics) prepared.push({ pageEl, metrics });
+    }
+    for (const entry of prepared) {
+      this.renderPage(state, entry.pageEl, entry.metrics);
+    }
   }
 
-  private renderPage(state: PdfViewState, pageEl: HTMLElement): void {
-    const metrics = this.getPageMetrics(state, pageEl);
+  private renderPage(
+    state: PdfViewState,
+    pageEl: HTMLElement,
+    providedMetrics?: PdfPageMetrics,
+  ): void {
+    const metrics = providedMetrics ?? this.getPageMetrics(state, pageEl);
     if (!metrics) return;
 
     const layer = this.ensureLayer(pageEl);
-    const annotations = this.annotationsForPage(state.filePath, metrics.pageNumber);
+    const storedAnnotations = this.store.annotationsForPage(
+      state.filePath,
+      metrics.pageNumber,
+    );
     const editingSession = state.editing;
+    let annotations: readonly PdfTextboxAnnotation[] = storedAnnotations;
     if (
       editingSession &&
       editingSession.pageNumber === metrics.pageNumber &&
-      !annotations.some((annotation) => annotation.id === editingSession.annotation.id)
+      !storedAnnotations.some(
+        (annotation) => annotation.id === editingSession.annotation.id,
+      )
     ) {
       // A newly placed textbox is not persisted until editing is committed, but
       // it still needs a host if PDF.js replaces its page while it is edited.
-      annotations.push(editingSession.annotation);
+      annotations = [...storedAnnotations, editingSession.annotation];
     }
 
     const existingElements = new Map<string, HTMLElement>();
@@ -4231,15 +3934,21 @@ export default class PdfTextboxPlugin extends Plugin {
         continue;
       }
 
-      if (!isEditingThis) {
-        this.renderAnnotationBody(state, element, annotation);
-      }
+      this.renderAnnotationBody(state, element, annotation);
     }
 
     for (const [id, element] of existingElements) {
       if (liveIds.has(id)) continue;
       if (state.editing?.element === element) continue;
       element.remove();
+    }
+
+    if (
+      layer.children.length === 0 &&
+      storedAnnotations.length === 0 &&
+      !(editingSession && editingSession.pageNumber === metrics.pageNumber)
+    ) {
+      layer.remove();
     }
   }
 
@@ -4250,15 +3959,20 @@ export default class PdfTextboxPlugin extends Plugin {
   ): void {
     const body = element.querySelector<HTMLElement>(".pdf-textbox-body");
     if (!body) return;
-    if (
-      body.dataset.renderedText === annotation.text &&
-      body.dataset.renderedPath === state.filePath
-    ) {
+
+    const cacheKey = `${state.filePath}\u0000${annotation.text}`;
+    if (body.dataset.renderKey === cacheKey) return;
+
+    const cached = this.markdownCache.get(cacheKey);
+    if (cached !== undefined) {
+      body.dataset.renderKey = cacheKey;
+      body.innerHTML = cached;
+      body.classList.add("is-rendered");
+      this.touchMarkdownCache(cacheKey, cached);
       return;
     }
 
-    body.dataset.renderedText = annotation.text;
-    body.dataset.renderedPath = state.filePath;
+    body.dataset.renderKey = cacheKey;
     const token = `${Date.now()}-${Math.random()}`;
     body.dataset.renderToken = token;
     body.empty();
@@ -4273,15 +3987,39 @@ export default class PdfTextboxPlugin extends Plugin {
       .then(() => {
         if (body.dataset.renderToken !== token) return;
         body.classList.add("is-rendered");
+        this.rememberMarkdown(cacheKey, body.innerHTML);
       })
       .catch((error) => {
         if (body.dataset.renderToken === token) {
-          delete body.dataset.renderedText;
-          delete body.dataset.renderedPath;
+          delete body.dataset.renderKey;
           body.empty();
         }
         console.error("PDF Textbox: Markdown could not be rendered", error);
       });
+  }
+
+  private touchMarkdownCache(key: string, html: string): void {
+    this.markdownCache.delete(key);
+    this.markdownCache.set(key, html);
+  }
+
+  private rememberMarkdown(key: string, html: string): void {
+    if (html.length === 0 || html.length > 200_000) return;
+    const previous = this.markdownCache.get(key);
+    if (previous !== undefined) this.markdownCacheChars -= previous.length;
+    this.touchMarkdownCache(key, html);
+    this.markdownCacheChars += html.length;
+
+    while (
+      this.markdownCacheChars > MARKDOWN_CACHE_MAX_CHARS &&
+      this.markdownCache.size > 0
+    ) {
+      const oldest = this.markdownCache.keys().next().value;
+      if (oldest === undefined) break;
+      const value = this.markdownCache.get(oldest);
+      this.markdownCache.delete(oldest);
+      this.markdownCacheChars -= value?.length ?? 0;
+    }
   }
 
   private ensureLayer(pageEl: HTMLElement): HTMLElement {
@@ -4302,6 +4040,24 @@ export default class PdfTextboxPlugin extends Plugin {
     annotation: PdfTextboxAnnotation,
     metrics: PdfPageMetrics,
   ): void {
+    const opacity = this.currentSettings.backgroundColorOpacity;
+    const key = [
+      annotation.nx,
+      annotation.ny,
+      annotation.nw,
+      annotation.nh,
+      annotation.rotation,
+      annotation.fontSize,
+      annotation.color,
+      annotation.collapsed ? 1 : 0,
+      metrics.scale,
+      metrics.rotation,
+      opacity,
+    ].join("|");
+
+    if (this.styleCache.get(element) === key) return;
+    this.styleCache.set(element, key);
+
     const rectangle = rotateNormalizedRect(
       annotation.nx,
       annotation.ny,
@@ -4326,10 +4082,8 @@ export default class PdfTextboxPlugin extends Plugin {
     element: HTMLElement,
     annotation: PdfTextboxAnnotation,
   ): void {
-    const background = hexToRgba(
-      annotation.color,
-      this.data.settings.backgroundColorOpacity,
-    );
+    const opacity = this.currentSettings.backgroundColorOpacity;
+    const background = hexToRgba(annotation.color, opacity);
     const textColor = textColorForBackground(annotation.color);
     element.style.backgroundColor = background;
     element.style.color = textColor;
@@ -4341,7 +4095,7 @@ export default class PdfTextboxPlugin extends Plugin {
     if (collapsedIcon) {
       collapsedIcon.style.backgroundColor = hexToRgba(
         annotation.color,
-        Math.max(0.7, this.data.settings.backgroundColorOpacity),
+        Math.max(0.7, opacity),
       );
       collapsedIcon.style.color = textColor;
     }
@@ -4358,23 +4112,43 @@ export default class PdfTextboxPlugin extends Plugin {
     backgroundHex: string,
   ): void {
     const fallback = textColorForBackground(backgroundHex);
-    const theme = this.getThemeMarkdownColors(element.ownerDocument);
-    const apply = (
-      property: string,
-      candidate: string,
-      minRatio: number,
-    ): void => {
-      element.style.setProperty(
-        property,
-        readableColor(candidate, backgroundHex, fallback, minRatio),
-      );
-    };
-
-    apply("--pdf-textbox-strong-color", theme.strong, 4.5);
-    apply("--pdf-textbox-em-color", theme.em, 4.5);
+    const theme = this.getReadableThemeColors(
+      element.ownerDocument,
+      backgroundHex,
+      fallback,
+    );
+    element.style.setProperty("--pdf-textbox-strong-color", theme.strong);
+    element.style.setProperty("--pdf-textbox-em-color", theme.em);
     theme.headings.forEach((color, index) => {
-      apply(`--pdf-textbox-h${index + 1}-color`, color, 3);
+      element.style.setProperty(`--pdf-textbox-h${index + 1}-color`, color);
     });
+  }
+
+  /** Theme colours already adjusted for one textbox background. */
+  private getReadableThemeColors(
+    doc: Document,
+    backgroundHex: string,
+    fallback: string,
+  ): ThemeMarkdownColors {
+    let cache = this.themeVarCache.get(doc);
+    if (!cache) {
+      cache = new Map();
+      this.themeVarCache.set(doc, cache);
+    }
+
+    const cached = cache.get(backgroundHex);
+    if (cached) return cached;
+
+    const base = this.getThemeMarkdownColors(doc);
+    const colors: ThemeMarkdownColors = {
+      strong: readableColor(base.strong, backgroundHex, fallback, 4.5),
+      em: readableColor(base.em, backgroundHex, fallback, 4.5),
+      headings: base.headings.map((color) =>
+        readableColor(color, backgroundHex, fallback, 3),
+      ),
+    };
+    cache.set(backgroundHex, colors);
+    return colors;
   }
 
   private getThemeMarkdownColors(doc: Document): ThemeMarkdownColors {
@@ -4542,6 +4316,7 @@ export default class PdfTextboxPlugin extends Plugin {
       annotation.color = normalizeHexColor(value);
       annotation.updatedAt = Date.now();
       this.applyAnnotationColors(element, annotation);
+      this.store.touch(state.filePath);
       this.requestSave();
     };
 
@@ -4624,6 +4399,7 @@ export default class PdfTextboxPlugin extends Plugin {
         element.style.fontSize = `${annotation.fontSize}px`;
       }
       sizeValue.textContent = String(annotation.fontSize);
+      this.store.touch(state.filePath);
       this.requestSave();
     };
 
@@ -4709,20 +4485,6 @@ export default class PdfTextboxPlugin extends Plugin {
     const cleanup = this.colorMenuCleanup;
     this.colorMenuCleanup = null;
     cleanup?.();
-  }
-
-  private annotationsForPage(
-    filePath: string,
-    pageNumber: number,
-  ): PdfTextboxAnnotation[] {
-    if (!filePath) return [];
-    const normalizedPath = normalizePath(filePath);
-    return this.data.annotations.filter(
-      (annotation) =>
-        annotation.file === normalizedPath &&
-        annotation.page === pageNumber &&
-        annotation.text.trim().length > 0,
-    );
   }
 
   private findPageElement(
@@ -4842,23 +4604,6 @@ export default class PdfTextboxPlugin extends Plugin {
       x: scaleX > 0 ? localX / scaleX : 0,
       y: scaleY > 0 ? localY / scaleY : 0,
     };
-  }
-
-  private updatePdfCoordinates(
-    annotation: PdfTextboxAnnotation,
-    metrics: PdfPageMetrics,
-  ): void {
-    const base = baseSizeForRotation(
-      metrics.baseWidth,
-      metrics.baseHeight,
-      metrics.rotation,
-      annotation.rotation,
-    );
-
-    annotation.x = annotation.nx * base.width;
-    annotation.y = annotation.ny * base.height;
-    annotation.width = annotation.nw * base.width;
-    annotation.height = annotation.nh * base.height;
   }
 
   private updateNormalizedRectFromElement(
