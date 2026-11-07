@@ -86,6 +86,7 @@ Under **Settings → PDF Textbox**:
 - **Opacity**: Transparency of the background color.
 - **Live formatting while editing**: Render Markdown formatting and LaTeX inside the textbox while typing. Disable it to always see the raw Markdown source.
 - **Confirm before burning**: Warn before overwriting the PDF. The warning dialog also offers **Don't show again**.
+- **Confirm before deleting burned textboxes**: Warn before removing a burned textbox annotation from the PDF. The warning dialog also offers **Don't show again**.
 
 Existing textboxes can be individually adjusted in edit mode for width, height, color, and text size.
 
@@ -126,6 +127,7 @@ textboxes of each PDF in its own shard file:
     "backgroundColor": "#ffd54f",
     "backgroundColorOpacity": 0.58,
     "confirmBeforeBurn": true,
+    "confirmBeforeDeleteAnnotation": true,
     "livePreviewWhileEditing": true,
     "editModeEnabled": true
   },

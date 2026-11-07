@@ -19,6 +19,8 @@ export interface PdfTextboxSettings {
   backgroundColorOpacity: number;
   /** Show the overwrite confirmation before burning into the PDF. */
   confirmBeforeBurn: boolean;
+  /** Show a confirmation before deleting a burned textbox annotation. */
+  confirmBeforeDeleteAnnotation: boolean;
   /** Render Markdown/LaTeX while typing instead of only after leaving the editor. */
   livePreviewWhileEditing: boolean;
   /** Keep textbox edit mode enabled across PDF switches and restarts. */
@@ -31,6 +33,7 @@ export const DEFAULT_SETTINGS: PdfTextboxSettings = {
   backgroundColor: "#ffd54f",
   backgroundColorOpacity: 0.58,
   confirmBeforeBurn: true,
+  confirmBeforeDeleteAnnotation: true,
   livePreviewWhileEditing: true,
   editModeEnabled: false,
 };
@@ -373,6 +376,10 @@ export function coerceSettings(raw: unknown): PdfTextboxSettings {
       typeof source.confirmBeforeBurn === "boolean"
         ? source.confirmBeforeBurn
         : DEFAULT_SETTINGS.confirmBeforeBurn,
+    confirmBeforeDeleteAnnotation:
+      typeof source.confirmBeforeDeleteAnnotation === "boolean"
+        ? source.confirmBeforeDeleteAnnotation
+        : DEFAULT_SETTINGS.confirmBeforeDeleteAnnotation,
     livePreviewWhileEditing:
       typeof source.livePreviewWhileEditing === "boolean"
         ? source.livePreviewWhileEditing

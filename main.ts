@@ -95,8 +95,6 @@ const BURN_MODE_CLASS = "pdf-textbox-burning";
 const SAVE_DEBOUNCE_MS = 400;
 const MIN_HEIGHT_PDF = 24;
 const MAX_ATTACH_ATTEMPTS = 40;
-/** PDF.js viewports express CSS pixels; 1 PDF point = 96/72 CSS pixels. */
-const CSS_UNITS = 96 / 72;
 const MARKDOWN_CACHE_MAX_CHARS = 3_000_000;
 
 /* -------------------------------------------------------------------------- */
@@ -627,68 +625,53 @@ const wrapSelectionExtension: Extension = EditorView.inputHandler.of(
 /*  Small confirmation modal                                                   */
 /* -------------------------------------------------------------------------- */
 
-class ConfirmModal extends Modal {
-  constructor(
-    app: App,
-    private readonly message: string,
-    private readonly onConfirm: () => void,
-  ) {
-    super(app);
-  }
-
-  onOpen(): void {
-    this.titleEl.setText("Delete textboxes");
-    this.contentEl.createEl("p", { text: this.message });
-
-    new Setting(this.contentEl)
-      .addButton((button) =>
-        button.setButtonText("Cancel").onClick(() => this.close()),
-      )
-      .addButton((button) =>
-        button
-          .setButtonText("Delete")
-          .setWarning()
-          .onClick(() => {
-            this.close();
-            this.onConfirm();
-          }),
-      );
-  }
-
-  onClose(): void {
-    this.contentEl.empty();
-  }
+interface ConfirmModalOptions {
+  title: string;
+  message: string;
+  description?: string;
+  confirmLabel: string;
+  /** When set, a "don't show again" toggle is shown and its value is passed on. */
+  skipLabel?: string;
+  skipDescription?: string;
+  onConfirm: (skipWarning: boolean) => void;
 }
 
-class BurnModal extends Modal {
+/**
+ * Shared destructive-confirmation modal. Used for burning, deleting all
+ * textboxes, and deleting a burned annotation. When a `skipLabel` is provided,
+ * the chosen "don't show again" value is forwarded so the caller can persist
+ * the matching setting.
+ */
+class ConfirmModal extends Modal {
   private skipWarning = false;
 
   constructor(
     app: App,
-    private readonly count: number,
-    private readonly onConfirm: (skipWarning: boolean) => void,
+    private readonly options: ConfirmModalOptions,
   ) {
     super(app);
   }
 
   onOpen(): void {
-    this.titleEl.setText("Burn textboxes into PDF");
-    this.contentEl.createEl("p", {
-      text: `${this.count} textbox${this.count === 1 ? "" : "es"} will be rendered with Markdown/LaTeX and written directly into this PDF as images.`,
-    });
-    this.contentEl.createEl("p", {
-      cls: "setting-item-description",
-      text: "The current PDF will be overwritten. No copy is created. The textboxes will be permanently part of the PDF and can no longer be edited as textboxes.",
-    });
+    this.titleEl.setText(this.options.title);
+    this.contentEl.createEl("p", { text: this.options.message });
+    if (this.options.description) {
+      this.contentEl.createEl("p", {
+        cls: "setting-item-description",
+        text: this.options.description,
+      });
+    }
 
-    new Setting(this.contentEl)
-      .setName("Don't show again")
-      .setDesc("Skip this warning for future burn operations.")
-      .addToggle((toggle) =>
-        toggle.setValue(false).onChange((value) => {
-          this.skipWarning = value;
-        }),
-      );
+    if (this.options.skipLabel) {
+      new Setting(this.contentEl)
+        .setName(this.options.skipLabel)
+        .setDesc(this.options.skipDescription ?? "")
+        .addToggle((toggle) =>
+          toggle.setValue(false).onChange((value) => {
+            this.skipWarning = value;
+          }),
+        );
+    }
 
     new Setting(this.contentEl)
       .addButton((button) =>
@@ -696,11 +679,11 @@ class BurnModal extends Modal {
       )
       .addButton((button) =>
         button
-          .setButtonText("Overwrite")
+          .setButtonText(this.options.confirmLabel)
           .setWarning()
           .onClick(() => {
             this.close();
-            this.onConfirm(this.skipWarning);
+            this.options.onConfirm(this.skipWarning);
           }),
       );
   }
@@ -1162,6 +1145,13 @@ export default class PdfTextboxPlugin extends Plugin {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || state.editing) return;
       const activeElement = ownerDocument.activeElement;
+      // While a toolbar control has focus, Escape should dismiss that control
+      // (e.g. the native colour picker or the font-size dropdown) instead of
+      // also toggling edit mode off underneath it.
+      if (activeElement && activeElement.closest?.(".pdf-toolbar")) return;
+      // The right-click colour menu closes itself on Escape; do not also
+      // toggle edit mode off while it is open.
+      if (this.colorMenuCleanup !== null) return;
       const focusInPdf =
         (activeElement !== null && state.rootEl.contains(activeElement)) ||
         this.app.workspace.activeLeaf === state.leaf;
@@ -1353,7 +1343,7 @@ export default class PdfTextboxPlugin extends Plugin {
       if (!target?.closest?.(".stampAnnotation, .popup")) return;
       event.preventDefault();
       event.stopPropagation();
-      void this.deleteBurnedPdfAnnotation(
+      void this.confirmDeleteBurnedPdfAnnotation(
         state,
         state.activeBurnedAnnotationId,
       );
@@ -2915,7 +2905,7 @@ export default class PdfTextboxPlugin extends Plugin {
     const temporaryLeaf = this.app.workspace.getLeaf("tab");
 
     try {
-      await temporaryLeaf.openFile(file);
+      await temporaryLeaf.openFile(file, { active: false });
       for (let attempt = 0; attempt < 20; attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 50));
         const languageExtension = this.findMarkdownLanguage();
@@ -3044,10 +3034,11 @@ export default class PdfTextboxPlugin extends Plugin {
       return;
     }
 
-    new ConfirmModal(
-      this.app,
-      `Remove ${count} textbox${count === 1 ? "" : "es"} from this PDF?`,
-      () => {
+    new ConfirmModal(this.app, {
+      title: "Delete textboxes",
+      message: `Remove ${count} textbox${count === 1 ? "" : "es"} from this PDF?`,
+      confirmLabel: "Delete",
+      onConfirm: () => {
         this.store.removeForFile(state.filePath);
         this.requestSave();
         for (const otherState of this.states.values()) {
@@ -3055,7 +3046,7 @@ export default class PdfTextboxPlugin extends Plugin {
         }
         new Notice(`${count} textbox${count === 1 ? "" : "es"} removed.`);
       },
-    ).open();
+    }).open();
   }
 
   /* -------------------------------- burning ------------------------------- */
@@ -3076,7 +3067,16 @@ export default class PdfTextboxPlugin extends Plugin {
     };
 
     if (this.currentSettings.confirmBeforeBurn) {
-      new BurnModal(this.app, count, run).open();
+      new ConfirmModal(this.app, {
+        title: "Burn textboxes into PDF",
+        message: `${count} textbox${count === 1 ? "" : "es"} will be rendered with Markdown/LaTeX and written directly into this PDF as images.`,
+        description:
+          "The current PDF will be overwritten. No copy is created. The textboxes will be permanently part of the PDF and can no longer be edited as textboxes.",
+        confirmLabel: "Overwrite",
+        skipLabel: "Don't show again",
+        skipDescription: "Skip this warning for future burn operations.",
+        onConfirm: run,
+      }).open();
     } else {
       run(false);
     }
@@ -3098,7 +3098,17 @@ export default class PdfTextboxPlugin extends Plugin {
     };
 
     if (this.currentSettings.confirmBeforeBurn) {
-      new BurnModal(this.app, 1, run).open();
+      new ConfirmModal(this.app, {
+        title: "Burn textbox into PDF",
+        message:
+          "This textbox will be rendered with Markdown/LaTeX and written directly into this PDF as an image.",
+        description:
+          "The current PDF will be overwritten. No copy is created. The textbox will be permanently part of the PDF and can no longer be edited as a textbox.",
+        confirmLabel: "Overwrite",
+        skipLabel: "Don't show again",
+        skipDescription: "Skip this warning for future burn operations.",
+        onConfirm: run,
+      }).open();
     } else {
       run(false);
     }
@@ -3547,7 +3557,7 @@ export default class PdfTextboxPlugin extends Plugin {
       setIcon(button, "trash-2");
 
       const deleteCurrent = (): void => {
-        void this.deleteBurnedPdfAnnotation(state, popupAnnotationId);
+        this.confirmDeleteBurnedPdfAnnotation(state, popupAnnotationId);
       };
 
       button.addEventListener("click", (event) => {
@@ -3565,6 +3575,32 @@ export default class PdfTextboxPlugin extends Plugin {
       actions.appendChild(button);
       popup.dataset.pdfTextboxDelete = "1";
     }
+  }
+
+  private confirmDeleteBurnedPdfAnnotation(
+    state: PdfViewState,
+    pdfAnnotationId: string,
+  ): void {
+    if (this.currentSettings.confirmBeforeDeleteAnnotation) {
+      new ConfirmModal(this.app, {
+        title: "Delete burned textbox",
+        message:
+          "The burned textbox annotation will be removed from the PDF. The current PDF will be overwritten.",
+        description: "This cannot be undone.",
+        confirmLabel: "Delete",
+        skipLabel: "Don't show again",
+        skipDescription: "Skip this warning for future deletions.",
+        onConfirm: (skipWarning) => {
+          if (skipWarning) {
+            this.setSettings({ confirmBeforeDeleteAnnotation: false });
+          }
+          void this.deleteBurnedPdfAnnotation(state, pdfAnnotationId);
+        },
+      }).open();
+      return;
+    }
+
+    void this.deleteBurnedPdfAnnotation(state, pdfAnnotationId);
   }
 
   private async deleteBurnedPdfAnnotation(
@@ -3639,6 +3675,20 @@ export default class PdfTextboxPlugin extends Plugin {
         saved.byteOffset,
         saved.byteOffset + saved.byteLength,
       ) as ArrayBuffer;
+
+      // Guard against clobbering changes made while the PDF was being rewritten.
+      const currentSourceBytes = await this.app.vault.readBinary(sourceFile);
+      const originalBytes = new Uint8Array(sourceBytes);
+      const latestBytes = new Uint8Array(currentSourceBytes);
+      if (
+        originalBytes.length !== latestBytes.length ||
+        originalBytes.some((byte, index) => byte !== latestBytes[index])
+      ) {
+        throw new Error(
+          "The PDF changed while deleting the annotation; no PDF changes were written.",
+        );
+      }
+
       await this.app.vault.modifyBinary(sourceFile, targetBytes);
       new Notice("Burned textbox annotation deleted.");
 
@@ -4246,12 +4296,43 @@ export default class PdfTextboxPlugin extends Plugin {
     const href = (anchor.getAttribute("href") ?? "").trim();
     const dataHref = (anchor.getAttribute("data-href") ?? "").trim();
 
-    if (/^obsidian:/i.test(href)) {
+    // Resolve obsidian://open URIs back into vault links so they open inside
+    // the current app instead of spawning a new window (and failing outside).
+    const obsidianOpen = /^obsidian:\/\/open\?([^#]*)(?:#(.*))?$/i.exec(href);
+    if (obsidianOpen) {
+      const file = new URLSearchParams(obsidianOpen[1] ?? "").get("file");
+      if (file) {
+        let path = file;
+        try {
+          path = decodeURIComponent(file);
+        } catch {
+          // Keep the raw value when it is not valid percent-encoding.
+        }
+        let heading = "";
+        if (obsidianOpen[2]) {
+          try {
+            heading = `#${decodeURIComponent(obsidianOpen[2])}`;
+          } catch {
+            heading = `#${obsidianOpen[2]}`;
+          }
+        }
+        void this.app.workspace.openLinkText(
+          `${path}${heading}`,
+          state.filePath,
+          false,
+        );
+        return;
+      }
       window.open(href, "_blank");
       return;
     }
 
     if (/^(https?:|mailto:)/i.test(href)) {
+      window.open(href, "_blank");
+      return;
+    }
+
+    if (/^obsidian:/i.test(href)) {
       window.open(href, "_blank");
       return;
     }
@@ -4698,10 +4779,10 @@ class PdfTextboxSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Opacity")
-      .setDesc("Opacity of the background color (10–100%).")
+      .setDesc("Opacity of the background color (5–100%).")
       .addSlider((slider) =>
         slider
-          .setLimits(10, 100, 5)
+          .setLimits(5, 100, 5)
           .setValue(Math.round(settings.backgroundColorOpacity * 100))
           .setDynamicTooltip()
           .onChange((value) =>
@@ -4735,6 +4816,19 @@ class PdfTextboxSettingTab extends PluginSettingTab {
         toggle.setValue(settings.confirmBeforeBurn).onChange((value) =>
           this.plugin.setSettings({ confirmBeforeBurn: value }),
         ),
+      );
+
+    new Setting(containerEl)
+      .setName("Confirm before deleting burned textboxes")
+      .setDesc(
+        "Show a warning before removing a burned textbox annotation from the PDF.",
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(settings.confirmBeforeDeleteAnnotation)
+          .onChange((value) =>
+            this.plugin.setSettings({ confirmBeforeDeleteAnnotation: value }),
+          ),
       );
   }
 }

@@ -5,6 +5,7 @@ import {
   DEFAULT_SETTINGS,
   PageAnnotationIndex,
   baseSizeForRotation,
+  coerceSettings,
   coerceStoredData,
   mergeAnnotations,
   normalizeRotation,
@@ -195,4 +196,42 @@ test("shard ids are deterministic, human readable and path safe", () => {
 test("normalizeVaultPath normalises separators and edges", () => {
   assert.equal(normalizeVaultPath("\\Folder\\Doc.pdf"), "Folder/Doc.pdf");
   assert.equal(normalizeVaultPath("/Folder//Doc.pdf/"), "Folder/Doc.pdf");
+});
+
+test("DEFAULT_SETTINGS enables confirmBeforeDeleteAnnotation", () => {
+  assert.equal(DEFAULT_SETTINGS.confirmBeforeDeleteAnnotation, true);
+});
+
+test("coerceSettings defaults confirmBeforeDeleteAnnotation to true", () => {
+  assert.equal(coerceSettings({}).confirmBeforeDeleteAnnotation, true);
+});
+
+test("coerceSettings preserves an explicit false confirmBeforeDeleteAnnotation", () => {
+  assert.equal(
+    coerceSettings({ confirmBeforeDeleteAnnotation: false })
+      .confirmBeforeDeleteAnnotation,
+    false,
+  );
+});
+
+test("coerceSettings falls back to true for a non-boolean confirmBeforeDeleteAnnotation", () => {
+  assert.equal(
+    coerceSettings({ confirmBeforeDeleteAnnotation: "not-a-bool" })
+      .confirmBeforeDeleteAnnotation,
+    true,
+  );
+});
+
+test("coerceStoredData passes confirmBeforeDeleteAnnotation through from data.json", () => {
+  const enabled = coerceStoredData({
+    version: 2,
+    settings: { confirmBeforeDeleteAnnotation: true },
+  });
+  assert.equal(enabled.settings.confirmBeforeDeleteAnnotation, true);
+
+  const disabled = coerceStoredData({
+    version: 2,
+    settings: { confirmBeforeDeleteAnnotation: false },
+  });
+  assert.equal(disabled.settings.confirmBeforeDeleteAnnotation, false);
 });
