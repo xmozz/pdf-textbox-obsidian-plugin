@@ -468,11 +468,11 @@ and keeps \`data.json.v1.bak\`.
 ## Feature checks
 
 - Zoom, scroll and rotate the PDF: boxes must stay on their page.
-- Toggle **Edit textboxes** in the toolbar.
+- Toggle **Edit textboxes** in the toolbar (Escape must not turn it off).
 - Drag the top-left handle, resize from the bottom-right handle.
 - Drag a box from page 1 to page 2.
-- Right-click a box: change color, text size, burn one box.
-- Collapse a box with the minus button; hover the T icon; expand it again.
+- Right-click a box: change color, text size, collapse/expand it, burn one box.
+- Collapse a box from the right-click menu; hover the T icon; expand it again.
 - Place a new box, type Markdown/LaTeX and press Ctrl/Cmd+Enter.
 - Paste an image with Ctrl/Cmd+V.
 - Open Demo.pdf in a second tab.

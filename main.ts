@@ -1146,11 +1146,9 @@ export default class PdfTextboxPlugin extends Plugin {
       if (event.key !== "Escape" || state.editing) return;
       const activeElement = ownerDocument.activeElement;
       // While a toolbar control has focus, Escape should dismiss that control
-      // (e.g. the native colour picker or the font-size dropdown) instead of
-      // also toggling edit mode off underneath it.
+      // (e.g. the native colour picker or the font-size dropdown).
       if (activeElement && activeElement.closest?.(".pdf-toolbar")) return;
-      // The right-click colour menu closes itself on Escape; do not also
-      // toggle edit mode off while it is open.
+      // The right-click colour menu closes itself on Escape.
       if (this.colorMenuCleanup !== null) return;
       const focusInPdf =
         (activeElement !== null && state.rootEl.contains(activeElement)) ||
@@ -1161,13 +1159,6 @@ export default class PdfTextboxPlugin extends Plugin {
         event.preventDefault();
         event.stopPropagation();
         this.setCreateMode(state, false);
-        return;
-      }
-
-      if (state.editMode) {
-        event.preventDefault();
-        event.stopPropagation();
-        this.setEditMode(state, false);
       }
     };
     ownerDocument.addEventListener("keydown", onKeyDown, true);
@@ -2013,14 +2004,6 @@ export default class PdfTextboxPlugin extends Plugin {
     setIcon(deleteButton, "x");
     element.appendChild(deleteButton);
 
-    const collapseButton = ownerDocument.createElement("button");
-    collapseButton.type = "button";
-    collapseButton.className = "pdf-textbox-collapse";
-    collapseButton.setAttribute("aria-label", "Collapse textbox");
-    collapseButton.setAttribute("title", "Collapse textbox");
-    setIcon(collapseButton, "minus");
-    element.appendChild(collapseButton);
-
     const collapsedIcon = ownerDocument.createElement("button");
     collapsedIcon.type = "button";
     collapsedIcon.className = "pdf-textbox-collapsed-icon";
@@ -2043,21 +2026,6 @@ export default class PdfTextboxPlugin extends Plugin {
       event.preventDefault();
       event.stopPropagation();
       this.deleteAnnotation(state, annotation.id);
-    });
-
-    collapseButton.addEventListener("pointerdown", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-    });
-    collapseButton.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (this.burning || !state.editMode) return;
-      annotation.collapsed = true;
-      annotation.updatedAt = Date.now();
-      this.applyCollapsedState(element, annotation);
-      this.store.touch(state.filePath);
-      this.requestSave();
     });
 
     collapsedIcon.addEventListener("pointerdown", (event) => {
@@ -2099,7 +2067,7 @@ export default class PdfTextboxPlugin extends Plugin {
         target &&
         typeof target.closest === "function" &&
         target.closest(
-          ".pdf-textbox-input, .pdf-textbox-delete, .pdf-textbox-grip, .pdf-textbox-resize, .pdf-textbox-collapse, .pdf-textbox-collapsed-icon",
+          ".pdf-textbox-input, .pdf-textbox-delete, .pdf-textbox-grip, .pdf-textbox-resize",
         )
       ) {
         return;
@@ -2122,7 +2090,7 @@ export default class PdfTextboxPlugin extends Plugin {
         target &&
         typeof target.closest === "function" &&
         target.closest(
-          ".pdf-textbox-input, .pdf-textbox-delete, .pdf-textbox-grip, .pdf-textbox-resize, .pdf-textbox-collapse, .pdf-textbox-collapsed-icon",
+          ".pdf-textbox-input, .pdf-textbox-delete, .pdf-textbox-grip, .pdf-textbox-resize, .pdf-textbox-collapsed-icon",
         )
       ) {
         return;
@@ -4354,10 +4322,7 @@ export default class PdfTextboxPlugin extends Plugin {
       ".pdf-textbox-collapsed-icon",
     );
     if (collapsedIcon) {
-      collapsedIcon.setAttribute(
-        "aria-label",
-        annotation.collapsed ? "Expand textbox" : "Collapse textbox",
-      );
+      collapsedIcon.setAttribute("aria-label", "Expand textbox");
     }
   }
 
@@ -4499,6 +4464,29 @@ export default class PdfTextboxPlugin extends Plugin {
     const separator = doc.createElement("div");
     separator.className = "pdf-textbox-menu-separator";
     menu.appendChild(separator);
+
+    if (state.editMode || annotation.collapsed) {
+      const collapseButton = doc.createElement("button");
+      collapseButton.type = "button";
+      collapseButton.className = "pdf-textbox-menu-item";
+      collapseButton.textContent = annotation.collapsed
+        ? "Expand textbox"
+        : "Collapse textbox";
+      collapseButton.setAttribute("role", "menuitem");
+      collapseButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        cleanup();
+        if (this.burning) return;
+        annotation.collapsed = !annotation.collapsed;
+        annotation.updatedAt = Date.now();
+        element.classList.remove("is-hover-expanded");
+        this.applyCollapsedState(element, annotation);
+        this.store.touch(state.filePath);
+        this.requestSave();
+      });
+      menu.appendChild(collapseButton);
+    }
 
     const burnButton = doc.createElement("button");
     burnButton.type = "button";

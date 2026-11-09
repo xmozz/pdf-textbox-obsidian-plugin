@@ -19,7 +19,7 @@ An Obsidian plugin that adds editable Markdown/LaTeX textboxes to Obsidian's nat
 - **Paste images**: Paste a screenshot or image with `Ctrl/Cmd+V` while editing. The image is saved to the vault's attachment folder and inserted as an `![[…]]` embed at the cursor.
 - **Move across pages**: Drag a textbox by its top-left handle onto another page of the same PDF. Its page, position, and rotation are updated and saved, including when pages have different sizes or orientations.
 - **Readable cursor**: The editor cursor follows the text contrast color and is rendered thicker, so it remains visible on light and dark backgrounds.
-- **Collapsible textboxes**: In edit mode, the minus button collapses a textbox to a small T icon. Hovering the icon temporarily expands the content; clicking the icon expands it permanently. The collapsed state is saved.
+- **Collapsible textboxes**: In edit mode, **Collapse textbox** in the right-click menu collapses a textbox to a small T icon. Hovering the icon temporarily expands the content; clicking the icon expands it permanently. The collapsed state is saved.
 - **Per-textbox styling**: Right-click a textbox in edit mode to change its background color, adjust its text size, or burn only that textbox into the PDF.
 - **Toolbar defaults**: A color picker and a font-size dropdown in the PDF toolbar define the defaults for new textboxes.
 - **Zoom- and scroll-stable**: Positions are stored in PDF coordinates (scale 1) and as normalized values. Overlays live inside the PDF page DOM and are realigned on zoom, rotation, scrolling, and page rendering.
@@ -59,11 +59,10 @@ BRAT downloads `main.js`, `manifest.json`, and `styles.css` from the latest GitH
 6. Turn on **Edit textboxes** for persistent editing:
    - Drag the handle at the top-left to move a textbox, including onto another page of the same PDF.
    - Drag the handle at the bottom-right to resize it horizontally and vertically.
-   - Use the minus button at the top-right to collapse the textbox to a small T icon.
-   - Hover the icon to preview the full textbox temporarily; click it to expand the textbox permanently.
-   - Right-click a textbox to change its background color, change its text size, or choose **Burn this textbox into PDF**.
+   - Right-click a textbox to change its background color, change its text size, collapse it, or choose **Burn this textbox into PDF**.
+   - Hover the small T icon of a collapsed textbox to preview it temporarily; click it to expand the textbox permanently.
    - Use the × button to delete it.
-   - The mode stays active until you turn it off or press **Esc**.
+   - The mode stays active until you turn it off with the toolbar button or the **Toggle textbox edit mode** command.
 7. The color picker and font-size dropdown in the PDF toolbar set the defaults for new textboxes.
 8. The **Burn textboxes into PDF** command in the command palette (`Ctrl/Cmd + P`) stores all textboxes as PDF annotations in the current PDF.
 9. To remove a burned textbox later, click its annotation in Obsidian and use the trash button in the popup, or focus it and press **Delete** / **Backspace**. The PDF is rewritten without that annotation.
