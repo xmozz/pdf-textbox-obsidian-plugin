@@ -20,8 +20,8 @@ An Obsidian plugin that adds editable Markdown/LaTeX textboxes to Obsidian's nat
 - **Move across pages**: Drag a textbox by its top-left handle onto another page of the same PDF. Its page, position, and rotation are updated and saved, including when pages have different sizes or orientations.
 - **Readable cursor**: The editor cursor follows the text contrast color and is rendered thicker, so it remains visible on light and dark backgrounds.
 - **Collapsible textboxes**: In edit mode, **Collapse textbox** in the right-click menu collapses a textbox to a small T icon. Hovering the icon temporarily expands the content; clicking the icon expands it permanently. The collapsed state is saved.
-- **Per-textbox styling**: Right-click a textbox in edit mode to change its background color, adjust its text size, or burn only that textbox into the PDF.
-- **Toolbar defaults**: A color picker and a font-size dropdown in the PDF toolbar define the defaults for new textboxes.
+- **Per-textbox styling**: Right-click a textbox in edit mode to change its background color, its background opacity, adjust its text size, or burn only that textbox into the PDF.
+- **Toolbar defaults**: A color picker, a font-size dropdown, and an opacity dropdown in the PDF toolbar define the defaults for new textboxes.
 - **Zoom- and scroll-stable**: Positions are stored in PDF coordinates (scale 1) and as normalized values. Overlays live inside the PDF page DOM and are realigned on zoom, rotation, scrolling, and page rendering.
 - **Persistent**: Textboxes are stored per PDF in `.obsidian/plugins/pdf-textbox/annotations/`, with a small index and the settings in `data.json`. Existing installations are migrated automatically on first start; a backup is kept as `data.json.v1.bak`.
 - **Burn into PDF**: The **Burn textboxes into PDF** command replaces the current PDF with a version that stores all textboxes as standard PDF Stamp annotations. You can also burn a single textbox from its context menu. Clicking a burned annotation in Obsidian shows a trash button; you can also focus it and press **Delete** or **Backspace** to remove it.
@@ -59,11 +59,11 @@ BRAT downloads `main.js`, `manifest.json`, and `styles.css` from the latest GitH
 6. Turn on **Edit textboxes** for persistent editing:
    - Drag the handle at the top-left to move a textbox, including onto another page of the same PDF.
    - Drag the handle at the bottom-right to resize it horizontally and vertically.
-   - Right-click a textbox to change its background color, change its text size, collapse it, or choose **Burn this textbox into PDF**.
+   - Right-click a textbox to change its background color, change its background opacity, change its text size, collapse it, or choose **Burn this textbox into PDF**.
    - Hover the small T icon of a collapsed textbox to preview it temporarily; click it to expand the textbox permanently.
    - Use the × button to delete it.
    - The mode stays active until you turn it off with the toolbar button or the **Toggle textbox edit mode** command.
-7. The color picker and font-size dropdown in the PDF toolbar set the defaults for new textboxes.
+7. The color picker, font-size dropdown, and opacity dropdown in the PDF toolbar set the defaults for new textboxes.
 8. The **Burn textboxes into PDF** command in the command palette (`Ctrl/Cmd + P`) stores all textboxes as PDF annotations in the current PDF.
 9. To remove a burned textbox later, click its annotation in Obsidian and use the trash button in the popup, or focus it and press **Delete** / **Backspace**. The PDF is rewritten without that annotation.
 
@@ -82,12 +82,12 @@ Under **Settings → PDF Textbox**:
 - **Default width**: Width of new textboxes as a percentage of the page width.
 - **Font size**: Font size of new textboxes in PDF points (also available from the toolbar dropdown).
 - **Background color**: Default color for new textboxes. Individual textboxes can be changed via right-click in edit mode.
-- **Opacity**: Transparency of the background color.
+- **Opacity**: Default background opacity for new textboxes. Individual textboxes can be changed via right-click in edit mode; the toolbar dropdown sets the default.
 - **Live formatting while editing**: Render Markdown formatting and LaTeX inside the textbox while typing. Disable it to always see the raw Markdown source.
 - **Confirm before burning**: Warn before overwriting the PDF. The warning dialog also offers **Don't show again**.
 - **Confirm before deleting burned textboxes**: Warn before removing a burned textbox annotation from the PDF. The warning dialog also offers **Don't show again**.
 
-Existing textboxes can be individually adjusted in edit mode for width, height, color, and text size.
+Existing textboxes can be individually adjusted in edit mode for width, height, color, opacity, and text size.
 
 ## Burning into PDF
 
@@ -156,6 +156,7 @@ A shard (`annotations/<id>.json`):
       "text": "**Comment** with $x^2$",
       "fontSize": 12,
       "color": "#ffd54f",
+      "opacity": 0.58,
       "collapsed": false,
       "createdAt": 1760000000000,
       "updatedAt": 1760000000000
@@ -167,6 +168,7 @@ A shard (`annotations/<id>.json`):
 - `nx`, `ny`, `nw`, and `nh` are normalized 0–1 values used for rendering and burning.
 - `text` contains the original Markdown/LaTeX source.
 - `color` is the background color of that textbox.
+- `opacity` is the background opacity of that textbox (0.05–1). Older shards without this field fall back to the configured default opacity when they are loaded.
 - `collapsed` stores whether the textbox is minimized to its hoverable icon.
 - `editModeEnabled` remembers whether edit mode should be on after reload or PDF switches.
 - `livePreviewWhileEditing` controls whether formatting is applied while typing.

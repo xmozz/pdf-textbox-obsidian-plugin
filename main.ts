@@ -87,6 +87,7 @@ const CREATE_TOOL_CLASS = "pdf-textbox-create-tool";
 const EDIT_TOOL_CLASS = "pdf-textbox-edit-tool";
 const COLOR_TOOL_CLASS = "pdf-textbox-color-tool";
 const SIZE_TOOL_CLASS = "pdf-textbox-size-tool";
+const OPACITY_TOOL_CLASS = "pdf-textbox-opacity-tool";
 const LAYER_CLASS = "pdf-textbox-layer";
 const ANNOTATION_CLASS = "pdf-textbox-annotation";
 const EDIT_MODE_CLASS = "pdf-textbox-edit-mode";
@@ -223,6 +224,7 @@ interface PdfViewState {
   editButton: HTMLElement | null;
   colorButton: HTMLInputElement | null;
   sizeButton: HTMLSelectElement | null;
+  opacityButton: HTMLSelectElement | null;
   cleanups: Array<() => void>;
   observer: MutationObserver | null;
   resizeObserver: ResizeObserver | null;
@@ -1108,6 +1110,7 @@ export default class PdfTextboxPlugin extends Plugin {
       editButton: null,
       colorButton: null,
       sizeButton: null,
+      opacityButton: null,
       cleanups: [],
       observer: null,
       resizeObserver: null,
@@ -1651,6 +1654,60 @@ export default class PdfTextboxPlugin extends Plugin {
     }
     sizeButton.value = currentSize;
     state.sizeButton = sizeButton;
+
+    let opacityButton = toolbar.querySelector<HTMLSelectElement>(
+      `.${OPACITY_TOOL_CLASS}`,
+    );
+    if (!opacityButton) {
+      opacityButton = host.createEl("select", { cls: OPACITY_TOOL_CLASS });
+      opacityButton.setAttr(
+        "aria-label",
+        "Default background opacity for new textboxes",
+      );
+      opacityButton.setAttr(
+        "title",
+        "Default background opacity for new textboxes",
+      );
+      for (let percent = 5; percent <= 100; percent += 5) {
+        const option = opacityButton.createEl("option", {
+          text: `${percent}%`,
+          value: String(percent),
+        });
+        option.value = String(percent);
+      }
+      opacityButton.addEventListener("change", () => {
+        this.setSettings({
+          backgroundColorOpacity: clamp(
+            finiteNumber(
+              opacityButton?.value,
+              settings.backgroundColorOpacity * 100,
+            ) / 100,
+            0.05,
+            1,
+          ),
+        });
+      });
+    } else if (opacityButton.parentElement !== host) {
+      host.appendChild(opacityButton);
+    }
+
+    const currentOpacity = String(
+      Math.round(settings.backgroundColorOpacity * 100),
+    );
+    if (
+      !Array.from(opacityButton.options).some(
+        (option) => option.value === currentOpacity,
+      )
+    ) {
+      const option = opacityButton.createEl("option", {
+        text: `${currentOpacity}%`,
+        value: currentOpacity,
+      });
+      option.value = currentOpacity;
+      opacityButton.appendChild(option);
+    }
+    opacityButton.value = currentOpacity;
+    state.opacityButton = opacityButton;
   }
 
   /** Rebuilds the toolbar only when Obsidian removed our controls. */
@@ -1659,7 +1716,8 @@ export default class PdfTextboxPlugin extends Plugin {
       state.createButton?.isConnected &&
       state.editButton?.isConnected &&
       state.colorButton?.isConnected &&
-      state.sizeButton?.isConnected
+      state.sizeButton?.isConnected &&
+      state.opacityButton?.isConnected
     ) {
       return;
     }
@@ -1950,6 +2008,7 @@ export default class PdfTextboxPlugin extends Plugin {
       text: "",
       fontSize: settings.defaultFontSize,
       color: settings.backgroundColor,
+      opacity: settings.backgroundColorOpacity,
       collapsed: false,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -3175,6 +3234,7 @@ export default class PdfTextboxPlugin extends Plugin {
           width,
           annotation.fontSize,
           annotation.color,
+          annotation.opacity,
           minHeight,
         );
 
@@ -3376,6 +3436,7 @@ export default class PdfTextboxPlugin extends Plugin {
     width: number,
     fontSize: number,
     color: string,
+    opacity: number,
     minHeight: number,
   ): Promise<{ host: HTMLElement; element: HTMLElement; component: Component }> {
     const component = new Component();
@@ -3393,10 +3454,7 @@ export default class PdfTextboxPlugin extends Plugin {
     element.style.setProperty("font-size", `${fontSize}px`, "important");
     element.style.padding = "2.5px 4.5px";
     element.style.borderRadius = "3px";
-    element.style.backgroundColor = hexToRgba(
-      color,
-      this.currentSettings.backgroundColorOpacity,
-    );
+    element.style.backgroundColor = hexToRgba(color, opacity);
     element.style.color = textColorForBackground(color);
     this.applyThemeTextColors(element, color);
 
@@ -4058,7 +4116,6 @@ export default class PdfTextboxPlugin extends Plugin {
     annotation: PdfTextboxAnnotation,
     metrics: PdfPageMetrics,
   ): void {
-    const opacity = this.currentSettings.backgroundColorOpacity;
     const key = [
       annotation.nx,
       annotation.ny,
@@ -4067,10 +4124,10 @@ export default class PdfTextboxPlugin extends Plugin {
       annotation.rotation,
       annotation.fontSize,
       annotation.color,
+      annotation.opacity,
       annotation.collapsed ? 1 : 0,
       metrics.scale,
       metrics.rotation,
-      opacity,
     ].join("|");
 
     if (this.styleCache.get(element) === key) return;
@@ -4100,7 +4157,7 @@ export default class PdfTextboxPlugin extends Plugin {
     element: HTMLElement,
     annotation: PdfTextboxAnnotation,
   ): void {
-    const opacity = this.currentSettings.backgroundColorOpacity;
+    const opacity = annotation.opacity;
     const background = hexToRgba(annotation.color, opacity);
     const textColor = textColorForBackground(annotation.color);
     element.style.backgroundColor = background;
@@ -4461,6 +4518,50 @@ export default class PdfTextboxPlugin extends Plugin {
     });
     menu.appendChild(sizeRow);
 
+    const opacityRow = doc.createElement("div");
+    opacityRow.className = "pdf-textbox-size-row pdf-textbox-opacity-row";
+    const opacityLabel = doc.createElement("span");
+    opacityLabel.className = "pdf-textbox-size-label";
+    opacityLabel.textContent = "Opacity";
+    opacityRow.appendChild(opacityLabel);
+
+    const opacityInput = doc.createElement("input");
+    opacityInput.type = "range";
+    opacityInput.className = "pdf-textbox-opacity-slider";
+    opacityInput.min = "5";
+    opacityInput.max = "100";
+    opacityInput.step = "5";
+    const currentOpacityPercent = Math.round(annotation.opacity * 100);
+    opacityInput.value = String(currentOpacityPercent);
+    opacityInput.setAttribute("aria-label", "Background opacity");
+    opacityRow.appendChild(opacityInput);
+
+    const opacityValue = doc.createElement("span");
+    opacityValue.className = "pdf-textbox-size-value pdf-textbox-opacity-value";
+    opacityValue.textContent = `${currentOpacityPercent}%`;
+    opacityRow.appendChild(opacityValue);
+
+    const applyOpacity = (value: number): void => {
+      if (this.burning) return;
+      annotation.opacity = clamp(value / 100, 0.05, 1);
+      annotation.updatedAt = Date.now();
+      const pageEl = this.findPageElement(state, annotation.page);
+      const metrics = pageEl ? this.getPageMetrics(state, pageEl) : null;
+      if (metrics) {
+        this.applyAnnotationGeometry(element, annotation, metrics);
+      } else {
+        this.applyAnnotationColors(element, annotation);
+      }
+      opacityValue.textContent = `${Math.round(annotation.opacity * 100)}%`;
+      this.store.touch(state.filePath);
+      this.requestSave();
+    };
+
+    opacityInput.addEventListener("input", () => {
+      applyOpacity(finiteNumber(opacityInput.value, annotation.opacity * 100));
+    });
+    menu.appendChild(opacityRow);
+
     const separator = doc.createElement("div");
     separator.className = "pdf-textbox-menu-separator";
     menu.appendChild(separator);
@@ -4767,7 +4868,9 @@ class PdfTextboxSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Opacity")
-      .setDesc("Opacity of the background color (5–100%).")
+      .setDesc(
+        "Default background opacity for new textboxes (5–100%). Right-click a textbox in edit mode to change its opacity individually.",
+      )
       .addSlider((slider) =>
         slider
           .setLimits(5, 100, 5)

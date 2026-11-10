@@ -89,6 +89,7 @@ function annotation(
     text,
     fontSize: 12,
     color: "#ffd54f",
+    opacity: 0.58,
     collapsed: false,
     createdAt: 1,
     updatedAt: 1,
@@ -241,6 +242,39 @@ test("startup reads only orphan shards when the index is present", async () => {
   assert.equal(fs.readCount, 1);
   await recovered.ensureLoaded("Two.pdf");
   assert.equal(recovered.countForFile("Two.pdf"), 1);
+});
+
+test("loads a pre-opacity shard and applies the configured default", async () => {
+  const fs = new MemoryFs();
+  const old = annotation("a", "Doc.pdf", 1, "Old box");
+  const raw: Record<string, unknown> = { ...old };
+  delete raw.opacity;
+
+  const data = {
+    version: 2,
+    settings: { ...DEFAULT_SETTINGS, backgroundColorOpacity: 0.42 },
+    annotations: [],
+    shards: { "Doc.pdf": "shard-Doc" },
+  };
+  fs.files.set(
+    `${SHARD_DIR}/shard-Doc.json`,
+    JSON.stringify({
+      version: 2,
+      file: "Doc.pdf",
+      annotations: [raw],
+    }),
+  );
+
+  const { host } = createHost(fs, data);
+  const store = new PdfTextboxStore(host);
+  const status = await store.initialize();
+
+  assert.equal(status.legacy, false);
+  await store.ensureLoaded("Doc.pdf");
+  assert.equal(store.countForFile("Doc.pdf"), 1);
+  const loaded = store.annotationsForPage("Doc.pdf", 1)[0];
+  assert.equal(loaded?.text, "Old box");
+  assert.equal(loaded?.opacity, 0.42);
 });
 
 test("adding, editing and removing boxes writes only that PDF's shard", async () => {

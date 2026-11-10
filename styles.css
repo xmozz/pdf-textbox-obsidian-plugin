@@ -39,7 +39,8 @@
   border-color: var(--text-muted);
 }
 
-.pdf-textbox-size-tool {
+.pdf-textbox-size-tool,
+.pdf-textbox-opacity-tool {
   flex: 0 0 auto;
   align-self: center;
   height: 26px;
@@ -52,6 +53,10 @@
   color: var(--text-normal);
   font-size: var(--font-ui-smaller, 11px);
   cursor: pointer;
+}
+
+.pdf-textbox-opacity-tool {
+  min-width: 58px;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -670,7 +675,7 @@
 .pdf-textbox-color-menu {
   position: fixed;
   z-index: 1000;
-  min-width: 176px;
+  min-width: 216px;
   padding: 8px;
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
@@ -775,6 +780,19 @@
   color: var(--text-normal);
   font-size: var(--font-ui-smaller, 12px);
   text-align: center;
+}
+
+.pdf-textbox-opacity-slider {
+  flex: 0 0 72px;
+  width: 72px;
+  margin: 0;
+  accent-color: var(--interactive-accent);
+  cursor: pointer;
+}
+
+.pdf-textbox-opacity-value {
+  min-width: 34px;
+  text-align: right;
 }
 
 .pdf-textbox-menu-separator {

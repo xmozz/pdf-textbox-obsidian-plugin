@@ -460,6 +460,7 @@ and keeps \`data.json.v1.bak\`.
 
 1. Open **Demo.pdf**.
 2. You should see one notice: "textbox storage was updated automatically".
+3. Old textboxes from the previous plugin version must keep working and use the default opacity from the settings.
 3. Verify \`.obsidian/plugins/pdf-textbox/annotations/\` contains one shard per PDF
    and \`data.json\` no longer contains an \`annotations\` array.
 4. Verify the textboxes appear on pages 1-4, including the landscape and the
@@ -471,7 +472,8 @@ and keeps \`data.json.v1.bak\`.
 - Toggle **Edit textboxes** in the toolbar (Escape must not turn it off).
 - Drag the top-left handle, resize from the bottom-right handle.
 - Drag a box from page 1 to page 2.
-- Right-click a box: change color, text size, collapse/expand it, burn one box.
+- Right-click a box: change color, background opacity, text size, collapse/expand it, burn one box.
+- Use the opacity dropdown in the PDF toolbar to set the default for new boxes; existing boxes keep their own opacity.
 - Collapse a box from the right-click menu; hover the T icon; expand it again.
 - Place a new box, type Markdown/LaTeX and press Ctrl/Cmd+Enter.
 - Paste an image with Ctrl/Cmd+V.

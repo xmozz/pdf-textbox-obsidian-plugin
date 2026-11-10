@@ -547,7 +547,11 @@ export class PdfTextboxStore {
       try {
         if (await this.host.fs.exists(path)) {
           const raw: unknown = JSON.parse(await this.host.fs.read(path));
-          const shard = coerceShard(raw, file);
+          const shard = coerceShard(
+            raw,
+            file,
+            this.settings.backgroundColorOpacity,
+          );
           if (!shard) throw new Error("invalid shard format");
 
           for (const annotation of shard.annotations) {
@@ -754,7 +758,11 @@ export class PdfTextboxStore {
       try {
         if (!(await this.host.fs.exists(path))) continue;
         const raw: unknown = JSON.parse(await this.host.fs.read(path));
-        const shard = coerceShard(raw, oldFile);
+        const shard = coerceShard(
+          raw,
+          oldFile,
+          this.settings.backgroundColorOpacity,
+        );
         if (!shard) continue;
         await this.writeShard(id, newFile, shard.annotations);
       } catch (error) {
@@ -897,7 +905,11 @@ export class PdfTextboxStore {
     try {
       if (!(await this.host.fs.exists(path))) return null;
       const raw: unknown = JSON.parse(await this.host.fs.read(path));
-      const shard = coerceShard(raw);
+      const shard = coerceShard(
+        raw,
+        undefined,
+        this.settings.backgroundColorOpacity,
+      );
       if (!shard) {
         warnings.push(`Ignored invalid shard ${path}.`);
         return null;

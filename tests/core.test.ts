@@ -33,6 +33,7 @@ function annotation(
     text,
     fontSize: 12,
     color: "#ffd54f",
+    opacity: 0.58,
     collapsed: false,
     createdAt: 1,
     updatedAt: 1,
@@ -135,6 +136,7 @@ test("coerceStoredData migrates v1 annotations and filters empty boxes", () => {
         nh: 0.1,
         text: "**Hello**",
         color: "#123456",
+        opacity: 0.3,
       },
       {
         id: "b",
@@ -154,7 +156,58 @@ test("coerceStoredData migrates v1 annotations and filters empty boxes", () => {
   assert.equal(stored.annotations.length, 1);
   assert.equal(stored.annotations[0]?.file, "Folder/Doc.pdf");
   assert.equal(stored.annotations[0]?.color, "#123456");
+  assert.equal(stored.annotations[0]?.opacity, 0.3);
   assert.deepEqual(stored.shards, {});
+});
+
+test("coerceStoredData fills and clamps per-textbox opacity", () => {
+  const base = {
+    version: 2,
+    settings: { backgroundColorOpacity: 0.4 },
+    shards: {},
+  };
+
+  const stored = coerceStoredData({
+    ...base,
+    annotations: [
+      {
+        id: "fallback",
+        file: "Doc.pdf",
+        page: 1,
+        nx: 0.1,
+        ny: 0.1,
+        nw: 0.2,
+        nh: 0.1,
+        text: "No opacity stored",
+      },
+      {
+        id: "high",
+        file: "Doc.pdf",
+        page: 1,
+        nx: 0.1,
+        ny: 0.1,
+        nw: 0.2,
+        nh: 0.1,
+        text: "Too high",
+        opacity: 5,
+      },
+      {
+        id: "low",
+        file: "Doc.pdf",
+        page: 1,
+        nx: 0.1,
+        ny: 0.1,
+        nw: 0.2,
+        nh: 0.1,
+        text: "Too low",
+        opacity: -1,
+      },
+    ],
+  });
+
+  assert.equal(stored.annotations[0]?.opacity, 0.4);
+  assert.equal(stored.annotations[1]?.opacity, 1);
+  assert.equal(stored.annotations[2]?.opacity, 0.05);
 });
 
 test("coerceStoredData reads v2 index and keeps downgrade residue", () => {

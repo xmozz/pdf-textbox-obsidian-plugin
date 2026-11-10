@@ -58,6 +58,8 @@ export interface PdfTextboxAnnotation {
   fontSize: number;
   /** Per-textbox background colour (#rrggbb). */
   color: string;
+  /** Per-textbox background opacity, 0.05 - 1. */
+  opacity: number;
   /** Whether the textbox is shown as a small icon until hovered. */
   collapsed: boolean;
   createdAt: number;
@@ -394,6 +396,7 @@ export function coerceSettings(raw: unknown): PdfTextboxSettings {
 export function coerceAnnotation(
   raw: unknown,
   fallbackColor = DEFAULT_SETTINGS.backgroundColor,
+  fallbackOpacity = DEFAULT_SETTINGS.backgroundColorOpacity,
 ): PdfTextboxAnnotation | null {
   if (!raw || typeof raw !== "object") return null;
   const source = raw as Record<string, unknown>;
@@ -425,6 +428,7 @@ export function coerceAnnotation(
     text: typeof source.text === "string" ? source.text : "",
     fontSize: clamp(finiteNumber(source.fontSize, DEFAULT_FONT_SIZE), 6, 96),
     color: normalizeHexColor(source.color ?? fallbackColor),
+    opacity: clamp(finiteNumber(source.opacity, fallbackOpacity), 0.05, 1),
     collapsed: source.collapsed === true,
     createdAt: finiteNumber(source.createdAt, Date.now()),
     updatedAt: finiteNumber(source.updatedAt, Date.now()),
@@ -467,7 +471,13 @@ export function coerceStoredData(raw: unknown): StoredData {
   const settings = coerceSettings(source.settings);
   const annotations = Array.isArray(source.annotations)
     ? source.annotations
-        .map((entry) => coerceAnnotation(entry, settings.backgroundColor))
+        .map((entry) =>
+          coerceAnnotation(
+            entry,
+            settings.backgroundColor,
+            settings.backgroundColorOpacity,
+          ),
+        )
         .filter((entry): entry is PdfTextboxAnnotation => entry !== null)
         .filter(isNonEmptyAnnotation)
     : [];
@@ -483,6 +493,7 @@ export function coerceStoredData(raw: unknown): StoredData {
 export function coerceShard(
   raw: unknown,
   fallbackFile?: string,
+  fallbackOpacity = DEFAULT_SETTINGS.backgroundColorOpacity,
 ): PdfTextboxShard | null {
   if (!raw || typeof raw !== "object") return null;
   const source = raw as Record<string, unknown>;
@@ -495,7 +506,13 @@ export function coerceShard(
 
   const annotations = Array.isArray(source.annotations)
     ? source.annotations
-        .map((entry) => coerceAnnotation(entry, DEFAULT_SETTINGS.backgroundColor))
+        .map((entry) =>
+          coerceAnnotation(
+            entry,
+            DEFAULT_SETTINGS.backgroundColor,
+            fallbackOpacity,
+          ),
+        )
         .filter((entry): entry is PdfTextboxAnnotation => entry !== null)
         .filter(isNonEmptyAnnotation)
     : [];
