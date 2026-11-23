@@ -95,6 +95,7 @@ const CREATE_MODE_CLASS = "pdf-textbox-create-mode";
 const BURN_MODE_CLASS = "pdf-textbox-burning";
 const SAVE_DEBOUNCE_MS = 400;
 const MIN_HEIGHT_PDF = 24;
+const MIN_ANNOTATION_OPACITY = 0.05;
 const MAX_ATTACH_ATTEMPTS = 40;
 const MARKDOWN_CACHE_MAX_CHARS = 3_000_000;
 
@@ -4162,6 +4163,12 @@ export default class PdfTextboxPlugin extends Plugin {
     const textColor = textColorForBackground(annotation.color);
     element.style.backgroundColor = background;
     element.style.color = textColor;
+    // At the lowest opacity the box itself should disappear in read mode;
+    // the outline stays visible while edit mode is on (see styles.css).
+    element.classList.toggle(
+      "is-outline-hidden",
+      opacity <= MIN_ANNOTATION_OPACITY,
+    );
     this.applyThemeTextColors(element, annotation.color);
 
     const collapsedIcon = element.querySelector<HTMLElement>(

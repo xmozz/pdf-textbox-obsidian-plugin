@@ -141,6 +141,15 @@
   user-select: none;
 }
 
+/* A textbox at the lowest background opacity should show only its content in
+   read mode, without the faint border and shadow. Edit mode keeps the outline
+   visible so the box can still be found, selected and resized. */
+.pdf-viewer-container:not(.pdf-textbox-edit-mode)
+  .pdf-textbox-annotation.is-outline-hidden {
+  border-color: transparent;
+  box-shadow: none;
+}
+
 .pdf-textbox-annotation.is-editing {
   outline: 2px solid var(--interactive-accent);
   outline-offset: 1px;

@@ -288,6 +288,7 @@ const box = (id, file, page, nx, ny, nw, nh, text, extra = {}) => ({
   text,
   fontSize: extra.fontSize ?? 12,
   color: extra.color ?? "#ffd54f",
+  opacity: extra.opacity,
   collapsed: extra.collapsed ?? false,
   createdAt: now,
   updatedAt: now,
@@ -368,6 +369,17 @@ const annotations = [
     0.12,
     "Rotated page. The box should stay at the top-left of the visible page.",
     { rotation: 90, color: "#ffcc80" },
+  ),
+  box(
+    "demo-8",
+    "Demo.pdf",
+    2,
+    0.12,
+    0.42,
+    0.42,
+    0.1,
+    "Opacity 5%. Outside edit mode only this text should be visible, without a border or shadow. Turn on edit mode to see the outline again.",
+    { opacity: 0.05, color: "#ffd54f" },
   ),
   box(
     "second-1",
@@ -473,6 +485,7 @@ and keeps \`data.json.v1.bak\`.
 - Drag the top-left handle, resize from the bottom-right handle.
 - Drag a box from page 1 to page 2.
 - Right-click a box: change color, background opacity, text size, collapse/expand it, burn one box.
+- Page 2 has a box with 5% opacity. Outside edit mode its border and shadow must be invisible (only text visible). In edit mode the outline must stay visible.
 - Use the opacity dropdown in the PDF toolbar to set the default for new boxes; existing boxes keep their own opacity.
 - Collapse a box from the right-click menu; hover the T icon; expand it again.
 - Place a new box, type Markdown/LaTeX and press Ctrl/Cmd+Enter.
